@@ -32,12 +32,12 @@ as JSON responses to the waiting shim.
 
 ## Supported Hook Events
 
-| Event             | Behaviour                                                      |
-|-------------------|----------------------------------------------------------------|
+| Event               | Behaviour                                                     |
+| ------------------- | ------------------------------------------------------------- |
 | `PermissionRequest` | Posts Approve / Deny buttons; blocks until clicked or timeout |
-| `Notification`    | Posts a notification message to the session thread             |
-| `Stop`            | Posts the assistant's final message to the session thread      |
-| `SubagentStop`    | Same as `Stop`, labelled with the agent type                   |
+| `Notification`      | Posts a notification message to the session thread            |
+| `Stop`              | Posts the assistant's final message to the session thread     |
+| `SubagentStop`      | Same as `Stop`, labelled with the agent type                  |
 
 ## Session Threads
 
@@ -130,7 +130,7 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/hooks/.venv/bin/python ~/.claude/hooks/hooks/notify_discord.py"
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py"
           }
         ]
       }
@@ -140,7 +140,7 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/hooks/.venv/bin/python ~/.claude/hooks/hooks/notify_discord.py",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
             "async": true
           }
         ]
@@ -151,7 +151,7 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/hooks/.venv/bin/python ~/.claude/hooks/hooks/notify_discord.py",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
             "async": true
           }
         ]
@@ -162,7 +162,7 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/hooks/.venv/bin/python ~/.claude/hooks/hooks/notify_discord.py",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
             "async": true
           }
         ]
@@ -174,16 +174,17 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
 
 ## Runtime Files
 
-| Path                                  | Purpose                                  |
-|---------------------------------------|------------------------------------------|
-| `/tmp/claude_discord.sock`            | Unix socket between shim and bot         |
-| `/tmp/claude_discord_bot.pid`         | PID of the running bot process           |
-| `/tmp/claude_discord_threads.json`    | Persisted session → thread ID mapping    |
-| `/tmp/claude_stop_<session>.txt`      | Stop-flag written by `!stop` command     |
+| Path                               | Purpose                               |
+| ---------------------------------- | ------------------------------------- |
+| `/tmp/claude_discord.sock`         | Unix socket between shim and bot      |
+| `/tmp/claude_discord_bot.pid`      | PID of the running bot process        |
+| `/tmp/claude_discord_threads.json` | Persisted session → thread ID mapping |
+| `/tmp/claude_stop_<session>.txt`   | Stop-flag written by `!stop` command  |
 
 ## Troubleshooting
 
 **No messages appear in Discord**
+
 - Confirm `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are exported in the same
   shell environment that runs Claude Code.
 - Check whether the bot process is running: `cat /tmp/claude_discord_bot.pid` then
@@ -192,13 +193,16 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
   stderr).
 
 **Approval request times out**
+
 - Increase `DISCORD_APPROVAL_TIMEOUT`. The shim waits `timeout + 5` seconds for the
   socket reply; after that Claude decides locally.
 
 **Bot accumulates stale threads**
+
 - Delete `/tmp/claude_discord_threads.json` to force the bot to create fresh threads
   on next start. Old threads in Discord can be archived manually.
 
 **Permission denied on socket**
+
 - Delete `/tmp/claude_discord.sock` and restart the bot. The socket is recreated on
   each bot start.
