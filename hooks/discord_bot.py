@@ -15,8 +15,10 @@ The bot handles Approve/Deny button interactions from notify_discord.py
 by writing decision files to ~/.claude/discord-decisions/.
 """
 
+import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -27,16 +29,37 @@ from discord.ext import commands
 BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 INSPECT_CHANNEL_ID = int(os.environ.get("DISCORD_INSPECT_CHANNEL_ID", CHANNEL_ID))
+APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120"))
+SOCKET_PATH = "/tmp/claude_discord.sock"
+PID_FILE = "/tmp/claude_discord_bot.pid"
+READY_FILE = "/tmp/claude_discord_bot.ready"
 
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 DECISION_DIR = Path.home() / ".claude" / "discord-decisions"
 DECISION_DIR.mkdir(exist_ok=True)
+THREAD_CACHE_FILE = Path("/tmp/claude_discord_threads.json")
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+# session_label -> discord.Thread (in-memory cache)
+_session_threads: dict[str, discord.Thread] = {}
+
+
+def _load_thread_ids() -> dict[str, int]:
+    try:
+        return json.loads(THREAD_CACHE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_thread_id(session: str, thread_id: int) -> None:
+    ids = _load_thread_ids()
+    ids[session] = thread_id
+    THREAD_CACHE_FILE.write_text(json.dumps(ids))
 
 
 # ── session helpers ────────────────────────────────────────────────────────────
@@ -196,6 +219,113 @@ async def slash_history(interaction: discord.Interaction, session: str = "0"):
     await interaction.followup.send(f"History opened in {thread.mention}")
 
 
+# ── session thread helpers ─────────────────────────────────────────────────────
+
+async def get_or_create_session_thread(session: str) -> discord.Thread:
+    # Check in-memory cache first
+    if session in _session_threads:
+        thread = _session_threads[session]
+        try:
+            await thread.fetch()
+            return thread
+        except discord.NotFound:
+            del _session_threads[session]
+
+    # Check persisted thread IDs
+    thread_ids = _load_thread_ids()
+    if session in thread_ids:
+        channel = bot.get_channel(CHANNEL_ID)
+        try:
+            thread = await bot.fetch_channel(thread_ids[session])
+            _session_threads[session] = thread
+            return thread
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
+    # Create new thread
+    channel = bot.get_channel(CHANNEL_ID)
+    thread = await channel.create_thread(
+        name=f"Session {session}",
+        type=discord.ChannelType.public_thread,
+    )
+    _session_threads[session] = thread
+    _save_thread_id(session, thread.id)
+    return thread
+
+
+# ── IPC socket server ──────────────────────────────────────────────────────────
+
+async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        line = await asyncio.wait_for(reader.readline(), timeout=10)
+        req = json.loads(line)
+    except Exception:
+        writer.close()
+        return
+
+    msg_type = req.get("type")
+    session = req.get("session", "unknown")
+    text = req.get("text", "")
+
+    if bot.get_channel(CHANNEL_ID) is None:
+        writer.write(b'{"ok": false, "error": "bot not connected"}\n')
+        await writer.drain()
+        writer.close()
+        return
+
+    if msg_type == "notify":
+        thread = await get_or_create_session_thread(session)
+        await thread.send(text)
+        writer.write(b'{"ok": true}\n')
+
+    elif msg_type == "approve":
+        request_id = req.get("request_id", "")
+        thread = await get_or_create_session_thread(session)
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(
+            label="Approve", style=discord.ButtonStyle.success,
+            custom_id=f"approve:{request_id}",
+        ))
+        view.add_item(discord.ui.Button(
+            label="Deny", style=discord.ButtonStyle.danger,
+            custom_id=f"deny:{request_id}",
+        ))
+        await thread.send(text, view=view)
+
+        # Poll for decision file
+        decision_file = DECISION_DIR / f"{request_id}.json"
+        deadline = time.monotonic() + APPROVAL_TIMEOUT
+        result = None
+        while time.monotonic() < deadline:
+            if decision_file.exists():
+                try:
+                    result = json.loads(decision_file.read_text())
+                    decision_file.unlink(missing_ok=True)
+                except (json.JSONDecodeError, OSError):
+                    pass
+                break
+            await asyncio.sleep(0.5)
+
+        if result is None:
+            result = {"decision": "ask", "reason": "Timed out waiting for Discord response"}
+        writer.write((json.dumps(result) + "\n").encode())
+
+    else:
+        writer.write(b'{"ok": false}\n')
+
+    await writer.drain()
+    writer.close()
+
+
+async def run_socket_server() -> None:
+    Path(SOCKET_PATH).unlink(missing_ok=True)
+    server = await asyncio.start_unix_server(handle_ipc_client, path=SOCKET_PATH)
+    Path(PID_FILE).write_text(str(os.getpid()))
+    Path(READY_FILE).write_text("ready")
+    async with server:
+        await server.serve_forever()
+
+
 # ── button interactions (Approve/Deny from notify_discord.py) ──────────────────
 
 @bot.event
@@ -227,8 +357,8 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
-    await tree.sync()
-    print(f"Discord bot ready as {bot.user}, slash commands synced")
+    print(f"Discord bot ready as {bot.user}")
+    asyncio.create_task(run_socket_server())
 
 
 if __name__ == "__main__":

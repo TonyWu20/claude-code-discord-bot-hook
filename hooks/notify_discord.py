@@ -23,6 +23,7 @@ BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "")
 SOCKET_PATH = "/tmp/claude_discord.sock"
 PID_FILE = "/tmp/claude_discord_bot.pid"
+READY_FILE = "/tmp/claude_discord_bot.ready"
 VENV_PYTHON = str(Path(__file__).parent / ".venv/bin/python")
 BOT_SCRIPT = str(Path(__file__).parent / "discord_bot.py")
 
@@ -33,7 +34,14 @@ def ensure_bot_running() -> None:
         try:
             pid = int(pid_path.read_text())
             os.kill(pid, 0)  # check alive
-            return
+            if Path(READY_FILE).exists():
+                return  # alive and Discord-connected
+            # alive but not yet ready — wait for it
+            for _ in range(60):
+                if Path(READY_FILE).exists():
+                    return
+                time.sleep(0.5)
+            return  # give up waiting, proceed anyway
         except (OSError, ValueError):
             pid_path.unlink(missing_ok=True)
     subprocess.Popen(
@@ -43,9 +51,9 @@ def ensure_bot_running() -> None:
         stderr=subprocess.DEVNULL,
         env={**os.environ, "DISCORD_BOT_TOKEN": BOT_TOKEN, "DISCORD_CHANNEL_ID": CHANNEL_ID},
     )
-    # Wait for socket to appear (up to 10 s)
-    for _ in range(20):
-        if Path(SOCKET_PATH).exists():
+    # Wait for bot to be fully ready (Discord connected), up to 30 s
+    for _ in range(60):
+        if Path(READY_FILE).exists():
             return
         time.sleep(0.5)
 
@@ -151,11 +159,6 @@ def main() -> None:
     session_label = resolve_session_label(session_id)
 
     ensure_bot_running()
-
-    if event == "Notification":
-        message = data.get("message", "Claude Code needs your attention")
-        ipc({"type": "notify", "text": f"**Claude Code Notification**\n\n{message}", "session": session_label})
-        sys.exit(0)
 
     if event == "Stop":
         last_text = data.get("last_assistant_message", "")
