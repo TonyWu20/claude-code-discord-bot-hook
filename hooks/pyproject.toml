@@ -5,3 +5,11 @@ requires-python = ">=3.11"
 dependencies = [
     "discord.py>=2.0",
 ]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["../tests"]
+pythonpath = ["hooks", "."]
+asyncio_mode = "auto"

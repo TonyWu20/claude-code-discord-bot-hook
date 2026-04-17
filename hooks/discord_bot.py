@@ -170,8 +170,8 @@ async def slash_sessions(interaction: discord.Interaction):
 
 
 @tree.command(name="history", description="Show conversation history for a session")
-@app_commands.describe(session="Session index (default 0) or sessionId prefix")
-async def slash_history(interaction: discord.Interaction, session: str = "0"):
+@app_commands.describe(session="Session index (default 0) or sessionId prefix", tail="Show only last 10 rounds (default False)")
+async def slash_history(interaction: discord.Interaction, session: str = "0", tail: bool = False):
     if interaction.channel_id != INSPECT_CHANNEL_ID:
         await interaction.response.send_message("Use the inspect channel.", ephemeral=True)
         return
@@ -208,9 +208,13 @@ async def slash_history(interaction: discord.Interaction, session: str = "0"):
         await interaction.followup.send("No messages in this session yet.")
         return
 
+    if tail:
+        messages = messages[-20:]
+
     channel = bot.get_channel(INSPECT_CHANNEL_ID)
+    label = f"tail:{len(messages)//2}r" if tail else f"{len(messages)} messages"
     thread = await channel.create_thread(
-        name=f"Session {session_id[:8]} — {len(messages)} messages",
+        name=f"Session {session_id[:8]} — {label}",
         type=discord.ChannelType.public_thread,
     )
     for m in messages:
@@ -224,12 +228,7 @@ async def slash_history(interaction: discord.Interaction, session: str = "0"):
 async def get_or_create_session_thread(session: str) -> discord.Thread:
     # Check in-memory cache first
     if session in _session_threads:
-        thread = _session_threads[session]
-        try:
-            await thread.fetch()
-            return thread
-        except discord.NotFound:
-            del _session_threads[session]
+        return _session_threads[session]
 
     # Check persisted thread IDs
     thread_ids = _load_thread_ids()
@@ -347,6 +346,13 @@ async def on_interaction(interaction: discord.Interaction):
         await interaction.response.send_message(f"❌ Denied `{request_id}`", ephemeral=True)
 
     (DECISION_DIR / f"{request_id}.json").write_text(json.dumps(decision))
+
+
+@bot.command(name="sync")
+@commands.is_owner()
+async def cmd_sync(ctx):
+    await tree.sync()
+    await ctx.send("Slash commands synced.")
 
 
 @bot.event

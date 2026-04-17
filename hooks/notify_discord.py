@@ -148,6 +148,14 @@ def main() -> None:
     if not BOT_TOKEN or not CHANNEL_ID:
         sys.exit(0)
 
+    if "--idle" in sys.argv:
+        idx = sys.argv.index("--idle")
+        session_label = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else "unknown"
+        time.sleep(300)
+        ensure_bot_running()
+        ipc({"type": "notify", "text": f"**Claude is waiting for input** (5 min idle)\nSession: `{session_label}`", "session": session_label})
+        sys.exit(0)
+
     raw = sys.stdin.read()
     try:
         data = json.loads(raw)
