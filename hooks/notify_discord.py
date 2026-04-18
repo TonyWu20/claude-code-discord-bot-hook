@@ -148,6 +148,24 @@ def main() -> None:
     if not BOT_TOKEN or not CHANNEL_ID:
         sys.exit(0)
 
+    if "--idle-from-stdin" in sys.argv:
+        try:
+            data = json.loads(sys.stdin.read())
+            session_id = data.get("session_id", "")
+            label = resolve_session_label(session_id)
+        except Exception:
+            label = "unknown"
+        import subprocess
+        proc = subprocess.Popen(
+            [sys.executable, __file__, "--idle", label],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        Path("/tmp/claude_watchdog.pid").write_text(str(proc.pid))
+        sys.exit(0)
+
     if "--idle" in sys.argv:
         idx = sys.argv.index("--idle")
         session_label = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else "unknown"
