@@ -47,6 +47,8 @@ tree = bot.tree
 
 # session_label -> discord.Thread (in-memory cache)
 _session_threads: dict[str, discord.Thread] = {}
+# request_id -> list of permission_suggestions entries
+_pending_suggestions: dict[str, list] = {}
 
 
 def _load_thread_ids() -> dict[str, int]:
@@ -254,6 +256,22 @@ async def get_or_create_session_thread(session: str) -> discord.Thread:
 
 # ── IPC socket server ──────────────────────────────────────────────────────────
 
+_DEST_LABELS = {"localSettings": "local", "projectSettings": "project",
+                "userSettings": "user", "session": "session"}
+
+
+def _suggestion_label(suggestion: dict, index: int) -> str:
+    stype = suggestion.get("type", "")
+    dest = _DEST_LABELS.get(suggestion.get("destination", ""), "")
+    if stype == "addRules":
+        behavior = suggestion.get("behavior", "allow")
+        return f"Allow + {behavior} rule ({dest})" if dest else f"Allow + {behavior} rule"
+    if stype == "setMode":
+        mode = suggestion.get("mode", "?")
+        return f"Allow + set mode: {mode}"
+    return f"Allow + Option {index + 1}"
+
+
 async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=10)
@@ -279,6 +297,7 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
     elif msg_type == "approve":
         request_id = req.get("request_id", "")
+        suggestions = req.get("permission_suggestions", [])
         thread = await get_or_create_session_thread(session)
         view = discord.ui.View(timeout=None)
         view.add_item(discord.ui.Button(
@@ -289,6 +308,14 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
             label="Deny", style=discord.ButtonStyle.danger,
             custom_id=f"deny:{request_id}",
         ))
+        for i, suggestion in enumerate(suggestions):
+            label = _suggestion_label(suggestion, i)
+            view.add_item(discord.ui.Button(
+                label=label, style=discord.ButtonStyle.primary,
+                custom_id=f"suggest:{i}:{request_id}",
+            ))
+        if suggestions:
+            _pending_suggestions[request_id] = suggestions
         await thread.send(text, view=view)
 
         # Poll for decision file
@@ -334,17 +361,33 @@ async def on_interaction(interaction: discord.Interaction):
     custom_id = interaction.data.get("custom_id", "")
     if ":" not in custom_id:
         return
-    action, request_id = custom_id.split(":", 1)
-    if action not in ("approve", "deny"):
+    parts = custom_id.split(":", 2)
+    action = parts[0]
+    if action not in ("approve", "deny", "suggest"):
         return
 
     if action == "approve":
+        request_id = parts[1]
         decision = {"decision": "allow", "reason": "Approved via Discord"}
         await interaction.response.send_message(f"✅ Approved `{request_id}`", ephemeral=True)
-    else:
+    elif action == "deny":
+        request_id = parts[1]
         decision = {"decision": "deny", "reason": "Denied via Discord"}
         await interaction.response.send_message(f"❌ Denied `{request_id}`", ephemeral=True)
+    else:  # suggest
+        idx = int(parts[1])
+        request_id = parts[2]
+        suggestions = _pending_suggestions.get(request_id, [])
+        if idx < len(suggestions):
+            chosen = suggestions[idx]
+            decision = {"decision": "allow", "updatedPermissions": [chosen]}
+            label = _suggestion_label(chosen, idx)
+        else:
+            decision = {"decision": "allow"}
+            label = f"Option {idx + 1}"
+        await interaction.response.send_message(f"✅ {label} `{request_id}`", ephemeral=True)
 
+    _pending_suggestions.pop(request_id, None)
     (DECISION_DIR / f"{request_id}.json").write_text(json.dumps(decision))
 
 

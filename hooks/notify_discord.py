@@ -78,10 +78,21 @@ def ipc(req: dict) -> Optional[dict]:
         return None
 
 
-def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest") -> None:
+def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest",
+                updated_permissions: Optional[list] = None) -> None:
     if event == "PermissionRequest":
         behavior = "allow" if decision == "allow" else "deny"
-        print(json.dumps({"decision": {"behavior": behavior, "reason": reason}}))
+        d: dict = {"behavior": behavior}
+        if reason:
+            d["reason"] = reason
+        if behavior == "allow" and updated_permissions:
+            d["updatedPermissions"] = updated_permissions
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": d,
+            }
+        }))
     else:
         # Legacy PreToolUse format
         print(json.dumps({
@@ -236,7 +247,9 @@ def main() -> None:
     request_id = f"{session_label}:{int(time.time())}"
     msg_text += f"\nID: `{request_id}`"
 
-    result = ipc({"type": "approve", "request_id": request_id, "text": msg_text, "session": session_label})
+    suggestions = data.get("permission_suggestions", []) if event == "PermissionRequest" else []
+    result = ipc({"type": "approve", "request_id": request_id, "text": msg_text,
+                  "session": session_label, "permission_suggestions": suggestions})
     if result:
         decision = result["decision"]
         reason = result.get("reason", "")
@@ -248,7 +261,8 @@ def main() -> None:
             else:
                 hook_output("ask", reason, event)
         else:
-            hook_output(decision, reason, event)
+            updated_permissions = result.get("updatedPermissions")
+            hook_output(decision, reason, event, updated_permissions)
     # No result at all: exit silently so Claude decides locally
 
 

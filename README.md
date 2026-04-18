@@ -35,7 +35,7 @@ and exposes slash commands for session inspection.
 
 | Event               | Behaviour                                                     |
 | ------------------- | ------------------------------------------------------------- |
-| `PermissionRequest` | Posts Approve / Deny buttons; blocks until clicked or timeout |
+| `PermissionRequest` | Posts Approve / Deny / permission-suggestion buttons; blocks until clicked or timeout |
 | `Notification`      | Posts a notification message to the session thread            |
 | `Stop`              | Posts the assistant's final message to the session thread     |
 | `SubagentStop`      | Same as `Stop`, labelled with the agent type                  |
