@@ -13,13 +13,17 @@ import notify_discord
 def test_hook_output_permission_allow(capsys):
     notify_discord.hook_output("allow", "ok", "PermissionRequest")
     out = json.loads(capsys.readouterr().out)
-    assert out == {"decision": {"behavior": "allow", "reason": "ok"}}
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PermissionRequest"
+    assert hs["decision"] == {"behavior": "allow", "reason": "ok"}
 
 
 def test_hook_output_permission_deny(capsys):
     notify_discord.hook_output("deny", "no", "PermissionRequest")
     out = json.loads(capsys.readouterr().out)
-    assert out == {"decision": {"behavior": "deny", "reason": "no"}}
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PermissionRequest"
+    assert hs["decision"] == {"behavior": "deny", "reason": "no"}
 
 
 def test_hook_output_pretooluse_legacy(capsys):
@@ -28,6 +32,24 @@ def test_hook_output_pretooluse_legacy(capsys):
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PreToolUse"
     assert hs["permissionDecision"] == "allow"
+
+
+def test_hook_output_with_updated_input_permission(capsys):
+    ui = {"questions": [{"question": "Color?", "options": [{"label": "Red"}]}], "answers": {"Color?": "Red"}}
+    notify_discord.hook_output("allow", "", "PermissionRequest", updated_input=ui)
+    out = json.loads(capsys.readouterr().out)
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PermissionRequest"
+    assert hs["decision"]["updatedInput"] == ui
+
+
+def test_hook_output_with_updated_input_pretooluse(capsys):
+    ui = {"allowedPrompts": []}
+    notify_discord.hook_output("allow", "", "PreToolUse", updated_input=ui)
+    out = json.loads(capsys.readouterr().out)
+    hs = out["hookSpecificOutput"]
+    assert hs["hookEventName"] == "PreToolUse"
+    assert hs["updatedInput"] == ui
 
 
 # ── ensure_bot_running ─────────────────────────────────────────────────────────

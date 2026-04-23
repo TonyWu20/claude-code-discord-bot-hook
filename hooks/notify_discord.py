@@ -79,7 +79,8 @@ def ipc(req: dict) -> Optional[dict]:
 
 
 def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest",
-                updated_permissions: Optional[list] = None) -> None:
+                updated_permissions: Optional[list] = None,
+                updated_input: Optional[dict] = None) -> None:
     if event == "PermissionRequest":
         behavior = "allow" if decision == "allow" else "deny"
         d: dict = {"behavior": behavior}
@@ -87,6 +88,8 @@ def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest
             d["reason"] = reason
         if behavior == "allow" and updated_permissions:
             d["updatedPermissions"] = updated_permissions
+        if updated_input is not None:
+            d["updatedInput"] = updated_input
         print(json.dumps({
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
@@ -94,14 +97,15 @@ def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest
             }
         }))
     else:
-        # Legacy PreToolUse format
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": decision,
-                "permissionDecisionReason": reason,
-            }
-        }))
+        # PreToolUse format
+        hs: dict = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }
+        if updated_input is not None:
+            hs["updatedInput"] = updated_input
+        print(json.dumps({"hookSpecificOutput": hs}))
 
 
 def resolve_session_label(session_id: str) -> str:
@@ -226,7 +230,34 @@ def main() -> None:
     tool = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
 
-    if tool == "Bash":
+    if tool == "AskUserQuestion":
+        questions = tool_input.get("questions", [])
+        lines = ["**Claude Code: Questions**\n"]
+        for q in questions:
+            lines.append(f"**{q.get('header', q.get('question', '?'))}**: {q.get('question', '')}")
+            opts = q.get("options", [])
+            for i, opt in enumerate(opts):
+                lines.append(f"  {i + 1}. {opt.get('label', opt)}")
+        lines.append(f"\nSession: `{session_label}`")
+        msg_text = "\n".join(lines)
+    elif tool == "ExitPlanMode":
+        allowed = tool_input.get("allowedPrompts", [])
+        lines = ["**Claude Code: Plan Approval Requested**\n"]
+        # Include plan content from the most recently modified plan file
+        plans_dir = Path.home() / ".claude" / "plans"
+        plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if plan_files:
+            plan_content = plan_files[0].read_text().strip()
+            if len(plan_content) > 1500:
+                plan_content = plan_content[:1500] + "\n…"
+            lines.append(f"```markdown\n{plan_content}\n```")
+        if allowed:
+            lines.append("Allowed prompts:")
+            for p in allowed:
+                lines.append(f"  • [{p.get('tool', '?')}] {p.get('prompt', '')}")
+        lines.append(f"\nSession: `{session_label}`")
+        msg_text = "\n".join(lines)
+    elif tool == "Bash":
         cmd = tool_input.get("command", "")
         short_cmd = cmd[:1800] + ("..." if len(cmd) > 1800 else "")
         msg_text = (
@@ -249,10 +280,12 @@ def main() -> None:
 
     suggestions = data.get("permission_suggestions", []) if event == "PermissionRequest" else []
     result = ipc({"type": "approve", "request_id": request_id, "text": msg_text,
-                  "session": session_label, "permission_suggestions": suggestions})
+                  "session": session_label, "permission_suggestions": suggestions,
+                  "tool_name": tool, "tool_input": tool_input})
     if result:
         decision = result["decision"]
         reason = result.get("reason", "")
+        updated_input = result.get("updatedInput")
         if decision == "ask":
             # Bot unreachable or timed out — fall through to local prompt
             if event == "PermissionRequest":
@@ -262,7 +295,7 @@ def main() -> None:
                 hook_output("ask", reason, event)
         else:
             updated_permissions = result.get("updatedPermissions")
-            hook_output(decision, reason, event, updated_permissions)
+            hook_output(decision, reason, event, updated_permissions, updated_input)
     # No result at all: exit silently so Claude decides locally
 
 
