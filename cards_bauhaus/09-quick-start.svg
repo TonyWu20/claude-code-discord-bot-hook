@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <rect width="800" height="800" fill="#EFF1F5"/>
+
+  <!-- Dark band slashes across upper-left -->
+  <polygon points="0,0 800,0 800,120 0,340" fill="#4C4F69"/>
+
+  <!-- Green circle punched top-right in dark band -->
+  <circle cx="720" cy="72" r="72" fill="#40A02B"/>
+  <circle cx="720" cy="72" r="40" fill="#EFF1F5"/>
+
+  <!-- "Get Started." — white, inside dark band, tilted -3° -->
+  <g transform="rotate(-3, 48, 140)">
+    <text x="48" y="110" font-family="'Inter',system-ui,sans-serif" font-size="72" font-weight="900" fill="#EFF1F5" letter-spacing="-0.03em">Get Started.</text>
+  </g>
+
+  <!-- Tilted rule — under the band -->
+  <line x1="48" y1="368" x2="752" y2="352" stroke="#4C4F69" stroke-width="5"/>
+
+  <!-- Step rows — upright, compact -->
+  <rect x="48" y="390" width="34" height="34" fill="#40A02B"/>
+  <text x="65" y="413" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="900" fill="#EFF1F5" text-anchor="middle">1</text>
+  <text x="96" y="406" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="700" fill="#4C4F69">Install Plugin</text>
+  <text x="96" y="422" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="400" fill="#6C6F85">/plugins install TonyWu20/my-claude-marketplace#...</text>
+
+  <rect x="48" y="440" width="34" height="34" fill="#1E66F5"/>
+  <text x="65" y="463" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="900" fill="#EFF1F5" text-anchor="middle">2</text>
+  <text x="96" y="456" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="700" fill="#4C4F69">Create Discord Bot</text>
+  <text x="96" y="472" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="400" fill="#6C6F85">discord.com/developers → Bot → copy token</text>
+
+  <rect x="48" y="490" width="34" height="34" fill="#DF8E1D"/>
+  <text x="65" y="513" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="900" fill="#EFF1F5" text-anchor="middle">3</text>
+  <text x="96" y="506" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="700" fill="#4C4F69">Set Environment Variables</text>
+  <text x="96" y="522" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="400" fill="#6C6F85">DISCORD_BOT_TOKEN + DISCORD_CHANNEL_ID</text>
+
+  <rect x="48" y="540" width="34" height="34" fill="#D20F39"/>
+  <text x="65" y="563" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="900" fill="#EFF1F5" text-anchor="middle">4</text>
+  <text x="96" y="556" font-family="'Inter',system-ui,sans-serif" font-size="14" font-weight="700" fill="#4C4F69">Install Dependencies</text>
+  <text x="96" y="572" font-family="'Inter',system-ui,sans-serif" font-size="12" font-weight="400" fill="#6C6F85">cd ~/.claude/hooks/hooks &amp;&amp; uv sync</text>
+
+  <!-- Tilted rule -->
+  <line x1="48" y1="606" x2="752" y2="592" stroke="#CCD0DA" stroke-width="1.5"/>
+
+  <!-- "That's it." — tilted +4° -->
+  <g transform="rotate(4, 48, 655)">
+    <text x="48" y="655" font-family="'Inter',system-ui,sans-serif" font-size="48" font-weight="900" fill="#4C4F69" letter-spacing="-0.02em">That's it.</text>
+  </g>
+
+  <!-- CTA -->
+  <rect x="48" y="696" width="704" height="40" fill="#4C4F69"/>
+  <text x="400" y="721" font-family="'Inter',system-ui,sans-serif" font-size="13" font-weight="700" fill="#EFF1F5" letter-spacing="0.04em" text-anchor="middle">github.com/TonyWu20/claude-code-discord-bot-hook</text>
+
+  <!-- Label -->
+  <text x="48" y="56" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="700" fill="#EFF1F5" opacity="0.7" letter-spacing="0.15em">09 / 09  ·  QUICK START</text>
+
+  <text x="48" y="764" font-family="'Inter',system-ui,sans-serif" font-size="11" font-weight="700" fill="#6C6F85" letter-spacing="0.12em">CLAUDE CODE DISCORD BOT HOOK</text>
+</svg>
