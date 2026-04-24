@@ -62,19 +62,15 @@ and exposes slash commands for session inspection.
 
 ## Setup
 
-### 1. Clone the repo
+### 1. Install from Claude Code Marketplace
 
-```sh
-git clone https://github.com/TonyWu20/claude-code-discord-bot-hook ~/.claude/hooks
+In Claude Code, run:
+
+```
+/plugins install TonyWu20/my-claude-marketplace#claude-code-discord-bot-hooks
 ```
 
-If you already have files in `~/.claude/hooks/`, clone to a subdirectory instead:
-
-```sh
-git clone https://github.com/TonyWu20/claude-code-discord-bot-hook ~/.claude/hooks/discord-bot
-```
-
-Then replace `~/.claude/hooks` with `~/.claude/hooks/discord-bot` in all paths below.
+This automatically installs the plugin and registers all hook events in your Claude Code configuration.
 
 ### 2. Create a Discord Bot
 
@@ -101,6 +97,10 @@ export DISCORD_INSPECT_CHANNEL_ID="inspect-channel-id"  # defaults to DISCORD_CH
 export DISCORD_NOTIFY_USER_IDS="123456789012345678"      # comma-separated Discord user IDs to auto-add to session threads
 ```
 
+`DISCORD_INSPECT_CHANNEL_ID` is where the `/sessions` and `/history` slash commands run. If not set, they fall back to `DISCORD_CHANNEL_ID`.
+
+`DISCORD_NOTIFY_USER_IDS` tells the bot which users to automatically add to each new session thread. This is essential if you want to receive notifications promptly — without being added to the thread, you won't get push notifications for messages posted there.
+
 ### 4. Install Dependencies
 
 ```sh
@@ -112,60 +112,6 @@ If `uv` is not installed:
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### 5. Register Hooks in `settings.json`
-
-Open `~/.claude/settings.json` (create it if it does not exist) and add:
-
-```json
-{
-  "hooks": {
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py"
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
-            "async": true
-          }
-        ]
-      }
-    ]
-  }
-}
 ```
 
 ## Runtime Files
@@ -182,7 +128,7 @@ Open `~/.claude/settings.json` (create it if it does not exist) and add:
 
 - Confirm `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID` are exported in the same
   shell environment that runs Claude Code.
-- Manually test the bot: `.venv/bin/python discord_bot.py` (it will log errors to
+- Manually test the bot: `cd ~/.claude/hooks/hooks && uv run python discord_bot.py` (it will log errors to
   stderr).
 
 **Approval request times out**
