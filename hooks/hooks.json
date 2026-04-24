@@ -1,0 +1,74 @@
+{
+  "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kill $(cat /tmp/claude_watchdog.pid 2>/dev/null) 2>/dev/null; ~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py --idle-from-stdin",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kill $(cat /tmp/claude_watchdog.pid) 2>/dev/null; rm /tmp/claude_watchdog.pid",
+            "async": true
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/.venv/bin/python ~/.claude/hooks/notify_discord.py",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "kill $(cat /tmp/claude_watchdog.pid) 2>/dev/null; rm /tmp/claude_watchdog.pid",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
