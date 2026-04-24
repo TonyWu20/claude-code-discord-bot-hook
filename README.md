@@ -4,6 +4,16 @@ Routes Claude Code hook events to a Discord channel — approval requests, notif
 and session stop signals — with interactive Approve/Deny buttons. Also provides slash
 commands to inspect active sessions and conversation history.
 
+## Highlights
+
+- **No Claude subscription required** — runs entirely on Claude Code's hook system; all you need is a Discord bot token.
+- **Not a full Discord-based Claude replacement** — this is a read-only monitor and permission handler. Sending user prompts back to a session would require injecting into the CLI, which is intentionally out of scope.
+- **Remote session monitoring** — approve or deny permission requests from your phone while away from your computer. Requests time out after 120 seconds with graceful fallback.
+- **`AskUserQuestion` support** — Claude's multi-choice questions appear as Discord Select menus; an "Answer with text" button opens a Modal for free-text responses.
+- **`ExitPlanMode` support** — plan approval requests show the full plan content in Discord with Approve, Reject, and Give Feedback buttons. "Give Feedback" opens a Modal so you can type revision instructions directly.
+- **History view with tail** — the `/history` slash command supports an optional `tail` parameter to see only the latest updates from your session, rendered in a Discord thread.
+- **Thread-based organization** — each session gets its own Discord thread, labeled with the session name set via `/rename` in Claude Code, keeping your server tidy.
+
 ## Architecture
 
 ```
@@ -35,7 +45,8 @@ and exposes slash commands for session inspection.
 
 | Event               | Behaviour                                                     |
 | ------------------- | ------------------------------------------------------------- |
-| `PermissionRequest` | Posts Approve / Deny buttons; blocks until clicked or timeout |
+| `PermissionRequest` | Posts Approve / Deny / permission-suggestion buttons; blocks until clicked or timeout |
+| `PreToolUse`        | Intercepts `AskUserQuestion` (Select menus + text modal) and `ExitPlanMode` (plan content + Approve / Reject / Give Feedback) |
 | `Notification`      | Posts a notification message to the session thread            |
 | `Stop`              | Posts the assistant's final message to the session thread     |
 | `SubagentStop`      | Same as `Stop`, labelled with the agent type                  |
@@ -87,6 +98,7 @@ Optional:
 
 ```sh
 export DISCORD_INSPECT_CHANNEL_ID="inspect-channel-id"  # defaults to DISCORD_CHANNEL_ID
+export DISCORD_NOTIFY_USER_IDS="123456789012345678"      # comma-separated Discord user IDs to auto-add to session threads
 ```
 
 ### 4. Install Dependencies
