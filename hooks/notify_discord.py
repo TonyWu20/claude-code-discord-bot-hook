@@ -78,6 +78,12 @@ def ipc(req: dict) -> Optional[dict]:
         return None
 
 
+def ipc_notify_parts(parts: list[str], session: str) -> None:
+    """Send multiple text parts as sequential notify messages."""
+    for part in parts:
+        ipc({"type": "notify", "text": part, "session": session})
+
+
 def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest",
                 updated_permissions: Optional[list] = None,
                 updated_input: Optional[dict] = None) -> None:
@@ -85,7 +91,10 @@ def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest
         behavior = "allow" if decision == "allow" else "deny"
         d: dict = {"behavior": behavior}
         if reason:
-            d["reason"] = reason
+            if behavior == "deny":
+                d["message"] = reason
+            else:
+                d["reason"] = reason
         if behavior == "allow" and updated_permissions:
             d["updatedPermissions"] = updated_permissions
         if updated_input is not None:
@@ -125,6 +134,24 @@ def resolve_session_label(session_id: str) -> str:
     except OSError:
         pass
     return session_id[:8]
+
+
+def split_text(text: str, limit: int = 1990) -> list[str]:
+    """Split text into chunks <= limit chars, breaking on newlines where possible."""
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    while text:
+        if len(text) <= limit:
+            parts.append(text)
+            break
+        # Try to break at the last newline within the limit
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return parts
 
 
 def to_yaml(obj: object, indent: int = 0) -> str:
@@ -204,16 +231,16 @@ def main() -> None:
     if event == "Stop":
         last_text = data.get("last_assistant_message", "")
         if last_text:
-            short = last_text[:1800] + ("..." if len(last_text) > 1800 else "")
-            ipc({"type": "notify", "text": f"**Claude:**\n{short}", "session": session_label})
+            parts = split_text(f"**Claude:**\n{last_text}")
+            ipc_notify_parts(parts, session_label)
         sys.exit(0)
 
     if event == "SubagentStop":
         last_text = data.get("last_assistant_message", "")
         agent_type = data.get("agent_type", "subagent")
         if last_text:
-            short = last_text[:1800] + ("..." if len(last_text) > 1800 else "")
-            ipc({"type": "notify", "text": f"**Claude [{agent_type}]:**\n{short}", "session": session_label})
+            parts = split_text(f"**Claude [{agent_type}]:**\n{last_text}")
+            ipc_notify_parts(parts, session_label)
         sys.exit(0)
 
     if event not in ("PreToolUse", "PermissionRequest"):
@@ -242,21 +269,42 @@ def main() -> None:
         msg_text = "\n".join(lines)
     elif tool == "ExitPlanMode":
         allowed = tool_input.get("allowedPrompts", [])
-        lines = ["**Claude Code: Plan Approval Requested**\n"]
-        # Include plan content from the most recently modified plan file
+        header = "**Claude Code: Plan Approval Requested**\n"
         plans_dir = Path.home() / ".claude" / "plans"
         plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+        plan_content = ""
         if plan_files:
             plan_content = plan_files[0].read_text().strip()
-            if len(plan_content) > 1500:
-                plan_content = plan_content[:1500] + "\n…"
-            lines.append(f"```markdown\n{plan_content}\n```")
+        footer_lines = []
         if allowed:
-            lines.append("Allowed prompts:")
+            footer_lines.append("Allowed prompts:")
             for p in allowed:
-                lines.append(f"  • [{p.get('tool', '?')}] {p.get('prompt', '')}")
-        lines.append(f"\nSession: `{session_label}`")
-        msg_text = "\n".join(lines)
+                footer_lines.append(f"  • [{p.get('tool', '?')}] {p.get('prompt', '')}")
+        footer_lines.append(f"\nSession: `{session_label}`")
+        footer = "\n".join(footer_lines)
+        request_id = f"{session_label}:{int(time.time())}"
+        if plan_content:
+            plan_chunks = split_text(plan_content, limit=1960)  # headroom for ```markdown\n...\n```
+            # Send overflow chunks as plain notify messages
+            first_msg = f"{header}```markdown\n{plan_chunks[0]}\n```"
+            for chunk in plan_chunks[1:]:
+                ipc({"type": "notify", "text": first_msg, "session": session_label})
+                first_msg = f"```markdown\n{chunk}\n```"
+            # Send the final chunk with buttons as the blocking approve message
+            last = f"{first_msg}\n{footer}\nID: `{request_id}`"
+        else:
+            last = f"{header}{footer}\nID: `{request_id}`"
+        result = ipc({"type": "approve", "request_id": request_id, "text": last,
+                      "session": session_label, "permission_suggestions": [],
+                      "tool_name": tool, "tool_input": tool_input})
+        if result:
+            decision = result["decision"]
+            reason = result.get("reason", "")
+            updated_input = result.get("updatedInput")
+            if decision != "ask":
+                updated_permissions = result.get("updatedPermissions")
+                hook_output(decision, reason, event, updated_permissions, updated_input)
+        return
     elif tool == "Bash":
         cmd = tool_input.get("command", "")
         short_cmd = cmd[:1800] + ("..." if len(cmd) > 1800 else "")
@@ -274,6 +322,21 @@ def main() -> None:
             f"Tool: `{tool}`\nInput:\n```\n{yaml_input}\n```\n"
             f"Session: `{session_label}`"
         )
+
+    # For AskUserQuestion, use blocking approve so Discord buttons can resolve it.
+    if tool == "AskUserQuestion":
+        request_id = f"{session_label}:{int(time.time())}"
+        msg_text += f"\nID: `{request_id}`"
+        result = ipc({"type": "approve", "request_id": request_id, "text": msg_text,
+                      "session": session_label, "permission_suggestions": [],
+                      "tool_name": tool, "tool_input": tool_input})
+        if result:
+            decision = result["decision"]
+            reason = result.get("reason", "")
+            updated_input = result.get("updatedInput")
+            if decision != "ask":
+                hook_output(decision, reason, event, None, updated_input)
+        return
 
     request_id = f"{session_label}:{int(time.time())}"
     msg_text += f"\nID: `{request_id}`"
