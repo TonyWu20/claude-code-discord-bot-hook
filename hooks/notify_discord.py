@@ -58,10 +58,12 @@ def ensure_bot_running() -> None:
         time.sleep(0.5)
 
 
-def ipc(req: dict) -> Optional[dict]:
+def ipc(req: dict, timeout: int | None = None) -> Optional[dict]:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120")) + 5)
+            if timeout is None:
+                timeout = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120")) + 5
+            s.settimeout(timeout)
             s.connect(SOCKET_PATH)
             s.sendall((json.dumps(req) + "\n").encode())
             buf = b""
@@ -294,9 +296,11 @@ def main() -> None:
             last = f"{first_msg}\n{footer}\nID: `{request_id}`"
         else:
             last = f"{header}{footer}\nID: `{request_id}`"
+        plan_timeout = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "900")) + 5
         result = ipc({"type": "approve", "request_id": request_id, "text": last,
                       "session": session_label, "permission_suggestions": [],
-                      "tool_name": tool, "tool_input": tool_input})
+                      "tool_name": tool, "tool_input": tool_input},
+                     timeout=plan_timeout)
         if result:
             decision = result["decision"]
             reason = result.get("reason", "")

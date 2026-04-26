@@ -1,5 +1,15 @@
 # Change Log
 
+## [0.4.1] 2026-04-27 — Fix ExitPlanMode timeout for plan review feedback
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`
+**Why:** The 120 s approval timeout was too short for ExitPlanMode — reading an implementation plan takes minutes, and feedback submitted after the poll loop expired was silently lost.
+**What:**
+- Add `DISCORD_PLAN_APPROVAL_TIMEOUT` env var (default `"900"` / 15 min) so ExitPlanMode gets its own longer poll deadline
+- `discord_bot.py`: use `PLAN_APPROVAL_TIMEOUT` in the decision poll loop when `tool_name == "ExitPlanMode"`
+- `notify_discord.py`: add `timeout` parameter to `ipc()` and pass `DISCORD_PLAN_APPROVAL_TIMEOUT + 5` for ExitPlanMode socket timeout
+- All other blocking hooks (Bash, AskUserQuestion, etc.) continue to use the original `DISCORD_APPROVAL_TIMEOUT` (120 s)
+
 ## [0.4.0] 2026-04-22 — AskUserQuestion and ExitPlanMode Discord support
 
 **Changed:** `hooks/notify_discord.py`, `hooks/discord_bot.py`

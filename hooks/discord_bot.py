@@ -31,6 +31,7 @@ BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 INSPECT_CHANNEL_ID = int(os.environ.get("DISCORD_INSPECT_CHANNEL_ID", CHANNEL_ID))
 APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120"))
+PLAN_APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "900"))
 _NOTIFY_USER_IDS: list[int] = [
     int(uid.strip())
     for uid in os.environ.get("DISCORD_NOTIFY_USER_IDS", "").split(",")
@@ -391,7 +392,8 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
         # Poll for decision file
         decision_file = DECISION_DIR / f"{request_id}.json"
-        deadline = time.monotonic() + APPROVAL_TIMEOUT
+        timeout = PLAN_APPROVAL_TIMEOUT if tool_name == "ExitPlanMode" else APPROVAL_TIMEOUT
+        deadline = time.monotonic() + timeout
         result = None
         while time.monotonic() < deadline:
             if decision_file.exists():
