@@ -31,7 +31,7 @@ BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 INSPECT_CHANNEL_ID = int(os.environ.get("DISCORD_INSPECT_CHANNEL_ID", CHANNEL_ID))
 APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120"))
-PLAN_APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "900"))
+PLAN_APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "1800"))
 _NOTIFY_USER_IDS: list[int] = [
     int(uid.strip())
     for uid in os.environ.get("DISCORD_NOTIFY_USER_IDS", "").split(",")
@@ -85,6 +85,7 @@ async def _add_notify_users(thread: discord.Thread) -> None:
 
 # ── session helpers ────────────────────────────────────────────────────────────
 
+
 def load_sessions() -> list[dict]:
     sessions = []
     for f in SESSIONS_DIR.glob("*.json"):
@@ -135,14 +136,18 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                     parts.append(block["text"])
                 elif block.get("type") == "tool_use":
                     name = block.get("name", "?")
-                    inp = json.dumps(block.get("input", {}), indent=2, ensure_ascii=False)
+                    inp = json.dumps(
+                        block.get("input", {}), indent=2, ensure_ascii=False
+                    )
                     if len(inp) > 500:
                         inp = inp[:500] + "\n…"
                     parts.append(f"🔧 **{name}**\n```json\n{inp}\n```")
                 elif block.get("type") == "tool_result":
                     result = block.get("content", "")
                     if isinstance(result, list):
-                        result = "\n".join(b.get("text", "") for b in result if isinstance(b, dict))
+                        result = "\n".join(
+                            b.get("text", "") for b in result if isinstance(b, dict)
+                        )
                     result = str(result).strip()
                     if len(result) > 500:
                         result = result[:500] + "\n…"
@@ -150,11 +155,13 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
             content = "\n".join(parts)
         if not content.strip():
             continue
-        messages.append({
-            "role": role,
-            "content": str(content),
-            "timestamp": d.get("timestamp", ""),
-        })
+        messages.append(
+            {
+                "role": role,
+                "content": str(content),
+                "timestamp": d.get("timestamp", ""),
+            }
+        )
     return messages
 
 
@@ -171,10 +178,13 @@ def format_message(m: dict) -> str:
 
 # ── slash commands ─────────────────────────────────────────────────────────────
 
+
 @tree.command(name="sessions", description="List active/recent Claude Code sessions")
 async def slash_sessions(interaction: discord.Interaction):
     if interaction.channel_id != INSPECT_CHANNEL_ID:
-        await interaction.response.send_message("Use the inspect channel.", ephemeral=True)
+        await interaction.response.send_message(
+            "Use the inspect channel.", ephemeral=True
+        )
         return
     sessions = load_sessions()
     if not sessions:
@@ -185,16 +195,31 @@ async def slash_sessions(interaction: discord.Interaction):
         sid = s.get("sessionId", "?")[:8]
         cwd = s.get("cwd", "?")
         ts = s.get("startedAt", 0)
-        started = datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts).strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+        started = (
+            datetime.fromtimestamp(ts / 1000 if ts > 1e10 else ts).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            if ts
+            else ""
+        )
         lines.append(f"`{i}` `{sid}` {started} — `{cwd}`")
-    await interaction.response.send_message("**Active/recent sessions:**\n" + "\n".join(lines), ephemeral=True)
+    await interaction.response.send_message(
+        "**Active/recent sessions:**\n" + "\n".join(lines), ephemeral=True
+    )
 
 
 @tree.command(name="history", description="Show conversation history for a session")
-@app_commands.describe(session="Session index (default 0) or sessionId prefix", tail="Show only last 10 rounds (default False)")
-async def slash_history(interaction: discord.Interaction, session: str = "0", tail: bool = False):
+@app_commands.describe(
+    session="Session index (default 0) or sessionId prefix",
+    tail="Show only last 10 rounds (default False)",
+)
+async def slash_history(
+    interaction: discord.Interaction, session: str = "0", tail: bool = False
+):
     if interaction.channel_id != INSPECT_CHANNEL_ID:
-        await interaction.response.send_message("Use the inspect channel.", ephemeral=True)
+        await interaction.response.send_message(
+            "Use the inspect channel.", ephemeral=True
+        )
         return
     await interaction.response.defer(ephemeral=True)
 
@@ -221,7 +246,9 @@ async def slash_history(interaction: discord.Interaction, session: str = "0", ta
     session_id = sess.get("sessionId", "")
     conv_file = find_conversation_file(session_id)
     if not conv_file:
-        await interaction.followup.send(f"No conversation file found for session `{session_id[:8]}`.")
+        await interaction.followup.send(
+            f"No conversation file found for session `{session_id[:8]}`."
+        )
         return
 
     messages = extract_messages(conv_file)
@@ -233,7 +260,7 @@ async def slash_history(interaction: discord.Interaction, session: str = "0", ta
         messages = messages[-20:]
 
     channel = bot.get_channel(INSPECT_CHANNEL_ID)
-    label = f"tail:{len(messages)//2}r" if tail else f"{len(messages)} messages"
+    label = f"tail:{len(messages) // 2}r" if tail else f"{len(messages)} messages"
     thread = await channel.create_thread(
         name=f"Session {session_id[:8]} — {label}",
         type=discord.ChannelType.public_thread,
@@ -245,6 +272,7 @@ async def slash_history(interaction: discord.Interaction, session: str = "0", ta
 
 
 # ── session thread helpers ─────────────────────────────────────────────────────
+
 
 async def get_or_create_session_thread(session: str) -> discord.Thread:
     # Check in-memory cache first
@@ -276,8 +304,12 @@ async def get_or_create_session_thread(session: str) -> discord.Thread:
 
 # ── IPC socket server ──────────────────────────────────────────────────────────
 
-_DEST_LABELS = {"localSettings": "local", "projectSettings": "project",
-                "userSettings": "user", "session": "session"}
+_DEST_LABELS = {
+    "localSettings": "local",
+    "projectSettings": "project",
+    "userSettings": "user",
+    "session": "session",
+}
 
 
 def _suggestion_label(suggestion: dict, index: int) -> str:
@@ -285,14 +317,18 @@ def _suggestion_label(suggestion: dict, index: int) -> str:
     dest = _DEST_LABELS.get(suggestion.get("destination", ""), "")
     if stype == "addRules":
         behavior = suggestion.get("behavior", "allow")
-        return f"Allow + {behavior} rule ({dest})" if dest else f"Allow + {behavior} rule"
+        return (
+            f"Allow + {behavior} rule ({dest})" if dest else f"Allow + {behavior} rule"
+        )
     if stype == "setMode":
         mode = suggestion.get("mode", "?")
         return f"Allow + set mode: {mode}"
     return f"Allow + Option {index + 1}"
 
 
-async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+async def handle_ipc_client(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+) -> None:
     try:
         line = await asyncio.wait_for(reader.readline(), timeout=10)
         req = json.loads(line)
@@ -329,12 +365,16 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
             for idx, q in enumerate(questions):
                 opts = q.get("options", [])
                 select_opts = [
-                    discord.SelectOption(label=o.get("label", str(o)), value=o.get("label", str(o)))
+                    discord.SelectOption(
+                        label=o.get("label", str(o)), value=o.get("label", str(o))
+                    )
                     for o in opts[:25]
                 ]
                 multi = q.get("multiSelect", False)
                 select = discord.ui.Select(
-                    placeholder=q.get("header", q.get("question", f"Question {idx + 1}")),
+                    placeholder=q.get(
+                        "header", q.get("question", f"Question {idx + 1}")
+                    ),
                     options=select_opts,
                     min_values=1,
                     max_values=len(select_opts) if multi else 1,
@@ -358,33 +398,51 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
             view.add_item(submit)
         elif tool_name == "ExitPlanMode":
             _pending_tool_input[request_id] = tool_input
-            view.add_item(discord.ui.Button(
-                label="Approve Plan", style=discord.ButtonStyle.success,
-                custom_id=f"approve:{request_id}",
-            ))
-            view.add_item(discord.ui.Button(
-                label="Reject Plan", style=discord.ButtonStyle.danger,
-                custom_id=f"deny:{request_id}",
-            ))
-            view.add_item(discord.ui.Button(
-                label="Give Feedback", style=discord.ButtonStyle.secondary,
-                custom_id=f"plan_feedback:{request_id}",
-            ))
+            view.add_item(
+                discord.ui.Button(
+                    label="Approve Plan",
+                    style=discord.ButtonStyle.success,
+                    custom_id=f"approve:{request_id}",
+                )
+            )
+            view.add_item(
+                discord.ui.Button(
+                    label="Reject Plan",
+                    style=discord.ButtonStyle.danger,
+                    custom_id=f"deny:{request_id}",
+                )
+            )
+            view.add_item(
+                discord.ui.Button(
+                    label="Give Feedback",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"plan_feedback:{request_id}",
+                )
+            )
         else:
-            view.add_item(discord.ui.Button(
-                label="Approve", style=discord.ButtonStyle.success,
-                custom_id=f"approve:{request_id}",
-            ))
-            view.add_item(discord.ui.Button(
-                label="Deny", style=discord.ButtonStyle.danger,
-                custom_id=f"deny:{request_id}",
-            ))
+            view.add_item(
+                discord.ui.Button(
+                    label="Approve",
+                    style=discord.ButtonStyle.success,
+                    custom_id=f"approve:{request_id}",
+                )
+            )
+            view.add_item(
+                discord.ui.Button(
+                    label="Deny",
+                    style=discord.ButtonStyle.danger,
+                    custom_id=f"deny:{request_id}",
+                )
+            )
             for i, suggestion in enumerate(suggestions):
                 label = _suggestion_label(suggestion, i)
-                view.add_item(discord.ui.Button(
-                    label=label, style=discord.ButtonStyle.primary,
-                    custom_id=f"suggest:{i}:{request_id}",
-                ))
+                view.add_item(
+                    discord.ui.Button(
+                        label=label,
+                        style=discord.ButtonStyle.primary,
+                        custom_id=f"suggest:{i}:{request_id}",
+                    )
+                )
             if suggestions:
                 _pending_suggestions[request_id] = suggestions
 
@@ -392,7 +450,9 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
 
         # Poll for decision file
         decision_file = DECISION_DIR / f"{request_id}.json"
-        timeout = PLAN_APPROVAL_TIMEOUT if tool_name == "ExitPlanMode" else APPROVAL_TIMEOUT
+        timeout = (
+            PLAN_APPROVAL_TIMEOUT if tool_name == "ExitPlanMode" else APPROVAL_TIMEOUT
+        )
         deadline = time.monotonic() + timeout
         result = None
         while time.monotonic() < deadline:
@@ -411,7 +471,10 @@ async def handle_ipc_client(reader: asyncio.StreamReader, writer: asyncio.Stream
         _pending_suggestions.pop(request_id, None)
 
         if result is None:
-            result = {"decision": "ask", "reason": "Timed out waiting for Discord response"}
+            result = {
+                "decision": "ask",
+                "reason": "Timed out waiting for Discord response",
+            }
         writer.write((json.dumps(result) + "\n").encode())
 
     else:
@@ -432,12 +495,13 @@ async def run_socket_server() -> None:
 
 # ── button interactions (Approve/Deny from notify_discord.py) ──────────────────
 
+
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.modal_submit:
         custom_id = interaction.data.get("custom_id", "")
         if custom_id.startswith("askq_modal:"):
-            request_id = custom_id[len("askq_modal:"):]
+            request_id = custom_id[len("askq_modal:") :]
             pending = _pending_questions.get(request_id)
             if pending:
                 questions = pending["questions"]
@@ -449,18 +513,26 @@ async def on_interaction(interaction: discord.Interaction):
                                 value = component.get("value", "").strip()
                                 if value:
                                     pending["answers"][q["question"]] = value
-            await interaction.response.send_message("✅ Text answers recorded. Press **Submit Answers** to confirm.", ephemeral=True)
+            await interaction.response.send_message(
+                "✅ Text answers recorded. Press **Submit Answers** to confirm.",
+                ephemeral=True,
+            )
         elif custom_id.startswith("plan_feedback_modal:"):
-            request_id = custom_id[len("plan_feedback_modal:"):]
+            request_id = custom_id[len("plan_feedback_modal:") :]
             feedback = ""
             for component_row in interaction.data.get("components", []):
                 for component in component_row.get("components", []):
                     if component.get("custom_id") == "plan_feedback_text":
                         feedback = component.get("value", "").strip()
-            decision = {"decision": "deny", "reason": feedback or "Rejected via Discord"}
+            decision = {
+                "decision": "deny",
+                "reason": feedback or "Rejected via Discord",
+            }
             _pending_tool_input.pop(request_id, None)
             (DECISION_DIR / f"{request_id}.json").write_text(json.dumps(decision))
-            await interaction.response.send_message(f"📝 Feedback submitted", ephemeral=True)
+            await interaction.response.send_message(
+                f"📝 Feedback submitted", ephemeral=True
+            )
         return
 
     if interaction.type != discord.InteractionType.component:
@@ -472,39 +544,47 @@ async def on_interaction(interaction: discord.Interaction):
     action = parts[0]
 
     if action == "askq_text":
-        request_id = custom_id[len("askq_text:"):]
+        request_id = custom_id[len("askq_text:") :]
         pending = _pending_questions.get(request_id)
         if not pending:
             await interaction.response.send_message("Session expired.", ephemeral=True)
             return
         questions = pending["questions"]
-        modal = discord.ui.Modal(title="Answer Questions", custom_id=f"askq_modal:{request_id}")
+        modal = discord.ui.Modal(
+            title="Answer Questions", custom_id=f"askq_modal:{request_id}"
+        )
         for idx, q in enumerate(questions[:5]):
-            modal.add_item(discord.ui.TextInput(
-                label=q.get("question", f"Question {idx + 1}")[:45],
-                custom_id=f"askq_field:{idx}",
-                style=discord.TextStyle.paragraph,
-                required=False,
-                placeholder="Leave blank to use your dropdown selection",
-            ))
+            modal.add_item(
+                discord.ui.TextInput(
+                    label=q.get("question", f"Question {idx + 1}")[:45],
+                    custom_id=f"askq_field:{idx}",
+                    style=discord.TextStyle.paragraph,
+                    required=False,
+                    placeholder="Leave blank to use your dropdown selection",
+                )
+            )
         await interaction.response.send_modal(modal)
         return
 
     if action == "plan_feedback":
-        request_id = custom_id[len("plan_feedback:"):]
-        modal = discord.ui.Modal(title="Plan Feedback", custom_id=f"plan_feedback_modal:{request_id}")
-        modal.add_item(discord.ui.TextInput(
-            label="What should Claude change?",
-            custom_id="plan_feedback_text",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            placeholder="Describe what to change or improve in the plan",
-        ))
+        request_id = custom_id[len("plan_feedback:") :]
+        modal = discord.ui.Modal(
+            title="Plan Feedback", custom_id=f"plan_feedback_modal:{request_id}"
+        )
+        modal.add_item(
+            discord.ui.TextInput(
+                label="What should Claude change?",
+                custom_id="plan_feedback_text",
+                style=discord.TextStyle.paragraph,
+                required=True,
+                placeholder="Describe what to change or improve in the plan",
+            )
+        )
         await interaction.response.send_modal(modal)
         return
 
     if action == "askq_submit":
-        request_id = custom_id[len("askq_submit:"):]
+        request_id = custom_id[len("askq_submit:") :]
         pending = _pending_questions.get(request_id, {})
         questions = pending.get("questions", [])
         answers = pending.get("answers", {})
@@ -533,20 +613,24 @@ async def on_interaction(interaction: discord.Interaction):
         return
 
     if action == "approve":
-        request_id = custom_id[len("approve:"):]
+        request_id = custom_id[len("approve:") :]
         # For ExitPlanMode, echo back tool_input as updatedInput
         tool_input = _pending_tool_input.pop(request_id, None)
         if tool_input is not None:
             decision = {"decision": "allow", "updatedInput": tool_input}
         else:
             decision = {"decision": "allow", "reason": "Approved via Discord"}
-        await interaction.response.send_message(f"✅ Approved `{request_id}`", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ Approved `{request_id}`", ephemeral=True
+        )
     elif action == "deny":
-        request_id = custom_id[len("deny:"):]
+        request_id = custom_id[len("deny:") :]
         _pending_tool_input.pop(request_id, None)
         _pending_questions.pop(request_id, None)
         decision = {"decision": "deny", "reason": "Denied via Discord"}
-        await interaction.response.send_message(f"❌ Denied `{request_id}`", ephemeral=True)
+        await interaction.response.send_message(
+            f"❌ Denied `{request_id}`", ephemeral=True
+        )
     else:  # suggest
         idx = int(parts[1])
         request_id = parts[2]
@@ -558,7 +642,9 @@ async def on_interaction(interaction: discord.Interaction):
         else:
             decision = {"decision": "allow"}
             label = f"Option {idx + 1}"
-        await interaction.response.send_message(f"✅ {label} `{request_id}`", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ {label} `{request_id}`", ephemeral=True
+        )
 
     _pending_suggestions.pop(request_id, None)
     (DECISION_DIR / f"{request_id}.json").write_text(json.dumps(decision))

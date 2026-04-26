@@ -1,5 +1,12 @@
 # Change Log
 
+## [0.4.2] 2026-04-27 — Increase plan approval timeout default to 1800 s
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`
+**Why:** The 900 s (15 min) default was too tight for reviewing large plans; reviewers need more time to read and give feedback.
+**What:**
+- Bump `DISCORD_PLAN_APPROVAL_TIMEOUT` default from `"900"` to `"1800"` (30 min) in both the bot poll loop and the socket timeout
+
 ## [0.4.1] 2026-04-27 — Fix ExitPlanMode timeout for plan review feedback
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`

@@ -49,7 +49,11 @@ def ensure_bot_running() -> None:
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env={**os.environ, "DISCORD_BOT_TOKEN": BOT_TOKEN, "DISCORD_CHANNEL_ID": CHANNEL_ID},
+        env={
+            **os.environ,
+            "DISCORD_BOT_TOKEN": BOT_TOKEN,
+            "DISCORD_CHANNEL_ID": CHANNEL_ID,
+        },
     )
     # Wait for bot to be fully ready (Discord connected), up to 30 s
     for _ in range(60):
@@ -86,9 +90,13 @@ def ipc_notify_parts(parts: list[str], session: str) -> None:
         ipc({"type": "notify", "text": part, "session": session})
 
 
-def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest",
-                updated_permissions: Optional[list] = None,
-                updated_input: Optional[dict] = None) -> None:
+def hook_output(
+    decision: str,
+    reason: str = "",
+    event: str = "PermissionRequest",
+    updated_permissions: Optional[list] = None,
+    updated_input: Optional[dict] = None,
+) -> None:
     if event == "PermissionRequest":
         behavior = "allow" if decision == "allow" else "deny"
         d: dict = {"behavior": behavior}
@@ -101,12 +109,16 @@ def hook_output(decision: str, reason: str = "", event: str = "PermissionRequest
             d["updatedPermissions"] = updated_permissions
         if updated_input is not None:
             d["updatedInput"] = updated_input
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PermissionRequest",
-                "decision": d,
-            }
-        }))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PermissionRequest",
+                        "decision": d,
+                    }
+                }
+            )
+        )
     else:
         # PreToolUse format
         hs: dict = {
@@ -200,6 +212,7 @@ def main() -> None:
         except Exception:
             label = "unknown"
         import subprocess
+
         proc = subprocess.Popen(
             [sys.executable, __file__, "--idle", label],
             start_new_session=True,
@@ -215,7 +228,13 @@ def main() -> None:
         session_label = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else "unknown"
         time.sleep(300)
         ensure_bot_running()
-        ipc({"type": "notify", "text": f"**Claude is waiting for input** (5 min idle)\nSession: `{session_label}`", "session": session_label})
+        ipc(
+            {
+                "type": "notify",
+                "text": f"**Claude is waiting for input** (5 min idle)\nSession: `{session_label}`",
+                "session": session_label,
+            }
+        )
         sys.exit(0)
 
     raw = sys.stdin.read()
@@ -263,7 +282,9 @@ def main() -> None:
         questions = tool_input.get("questions", [])
         lines = ["**Claude Code: Questions**\n"]
         for q in questions:
-            lines.append(f"**{q.get('header', q.get('question', '?'))}**: {q.get('question', '')}")
+            lines.append(
+                f"**{q.get('header', q.get('question', '?'))}**: {q.get('question', '')}"
+            )
             opts = q.get("options", [])
             for i, opt in enumerate(opts):
                 lines.append(f"  {i + 1}. {opt.get('label', opt)}")
@@ -273,7 +294,9 @@ def main() -> None:
         allowed = tool_input.get("allowedPrompts", [])
         header = "**Claude Code: Plan Approval Requested**\n"
         plans_dir = Path.home() / ".claude" / "plans"
-        plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+        plan_files = sorted(
+            plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True
+        )
         plan_content = ""
         if plan_files:
             plan_content = plan_files[0].read_text().strip()
@@ -286,7 +309,9 @@ def main() -> None:
         footer = "\n".join(footer_lines)
         request_id = f"{session_label}:{int(time.time())}"
         if plan_content:
-            plan_chunks = split_text(plan_content, limit=1960)  # headroom for ```markdown\n...\n```
+            plan_chunks = split_text(
+                plan_content, limit=1960
+            )  # headroom for ```markdown\n...\n```
             # Send overflow chunks as plain notify messages
             first_msg = f"{header}```markdown\n{plan_chunks[0]}\n```"
             for chunk in plan_chunks[1:]:
@@ -296,11 +321,19 @@ def main() -> None:
             last = f"{first_msg}\n{footer}\nID: `{request_id}`"
         else:
             last = f"{header}{footer}\nID: `{request_id}`"
-        plan_timeout = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "900")) + 5
-        result = ipc({"type": "approve", "request_id": request_id, "text": last,
-                      "session": session_label, "permission_suggestions": [],
-                      "tool_name": tool, "tool_input": tool_input},
-                     timeout=plan_timeout)
+        plan_timeout = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "1800")) + 5
+        result = ipc(
+            {
+                "type": "approve",
+                "request_id": request_id,
+                "text": last,
+                "session": session_label,
+                "permission_suggestions": [],
+                "tool_name": tool,
+                "tool_input": tool_input,
+            },
+            timeout=plan_timeout,
+        )
         if result:
             decision = result["decision"]
             reason = result.get("reason", "")
@@ -331,9 +364,17 @@ def main() -> None:
     if tool == "AskUserQuestion":
         request_id = f"{session_label}:{int(time.time())}"
         msg_text += f"\nID: `{request_id}`"
-        result = ipc({"type": "approve", "request_id": request_id, "text": msg_text,
-                      "session": session_label, "permission_suggestions": [],
-                      "tool_name": tool, "tool_input": tool_input})
+        result = ipc(
+            {
+                "type": "approve",
+                "request_id": request_id,
+                "text": msg_text,
+                "session": session_label,
+                "permission_suggestions": [],
+                "tool_name": tool,
+                "tool_input": tool_input,
+            }
+        )
         if result:
             decision = result["decision"]
             reason = result.get("reason", "")
@@ -345,10 +386,20 @@ def main() -> None:
     request_id = f"{session_label}:{int(time.time())}"
     msg_text += f"\nID: `{request_id}`"
 
-    suggestions = data.get("permission_suggestions", []) if event == "PermissionRequest" else []
-    result = ipc({"type": "approve", "request_id": request_id, "text": msg_text,
-                  "session": session_label, "permission_suggestions": suggestions,
-                  "tool_name": tool, "tool_input": tool_input})
+    suggestions = (
+        data.get("permission_suggestions", []) if event == "PermissionRequest" else []
+    )
+    result = ipc(
+        {
+            "type": "approve",
+            "request_id": request_id,
+            "text": msg_text,
+            "session": session_label,
+            "permission_suggestions": suggestions,
+            "tool_name": tool,
+            "tool_input": tool_input,
+        }
+    )
     if result:
         decision = result["decision"]
         reason = result.get("reason", "")
