@@ -1,0 +1,12 @@
+{
+  "session_id": "poi456lkj789",
+  "transcript_path": "/Users/user/.claude/projects/my-project/poi456lk-j789-0123-4567-890123456789.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_id": "agent-def456",
+  "agent_type": "Explore",
+  "agent_transcript_path": "/Users/user/.claude/projects/my-project/poi456lk-j789-0123-4567-890123456789/subagents/agent-def456.jsonl",
+  "last_assistant_message": "Analysis complete. Found 3 potential issues:\n- Memory leak in cache module\n- Race condition in request handler\n- Missing input validation on API endpoint"
+}

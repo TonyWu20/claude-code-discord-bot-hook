@@ -1,0 +1,32 @@
+{
+  "session_id": "qwe456rty789",
+  "transcript_path": "/Users/user/.claude/projects/my-project/qwe456rt-y789-0123-4567-890123456789.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which framework should we use?",
+        "header": "Framework Selection",
+        "options": [
+          { "label": "React", "description": "Meta's UI library" },
+          { "label": "Vue", "description": "Progressive framework" },
+          { "label": "Svelte", "description": "Compile-time framework" }
+        ],
+        "multiSelect": false
+      },
+      {
+        "question": "What features are most important?",
+        "header": "Feature Priorities",
+        "options": [
+          { "label": "Performance" },
+          { "label": "Developer Experience" },
+          { "label": "Bundle Size" }
+        ],
+        "multiSelect": true
+      }
+    ]
+  }
+}

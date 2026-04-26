@@ -1,5 +1,39 @@
 # Change Log
 
+## [0.5.0] 2026-04-27 — Suggestion details, Edit Rule, code block nesting fix, test harness
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `tests/test_notify_discord.py`
+**New:** `hooks/tests/fixtures/*.json` (9 files), `hooks/tests/simulate.py`
+**Why:** Users couldn't see what permission suggestion they were approving (button labels
+  were too short); had no way to edit rules before applying; long Bash commands were
+  silently truncated; plan content with embedded code blocks broke Discord formatting;
+  no way to test hooks without a real Claude Code session.
+**What:**
+- **Suggestion detail text:** Permission suggestion content (tool name, rule pattern,
+  destination) is now displayed inline in the Discord message, not hidden behind
+  button labels
+- **Edit Rule button:** Each `addRules` suggestion gets an Edit Rule button that opens
+  a Discord Modal pre-filled with the current `ruleContent`; edits are written back as
+  the approval decision with the modified suggestion
+- **Bash command pagination:** Long Bash commands (>1700 chars) are split across
+  multiple Discord messages instead of being silently truncated at 1800 chars —
+  overflow chunks are sent as notify messages; the last chunk has the interactive
+  buttons
+- **Code block nesting fix (plans):** `_wrap_plan_for_discord()` splits plan content at
+  its own ` ``` ` fence boundaries into alternating ```` ```markdown ```` / ```` ```lang ````
+  blocks so code blocks inside a plan render correctly without breaking the outer
+  formatting
+- **Code block nesting fix (all tool input):** `_sanitize_fences()` replaces triple
+  backticks with fullwidth grave accents in Bash commands, generic tool YAML, history
+  views, and tool results — prevents any content containing ` ``` ` from breaking
+  Discord code block fencing
+- **Test fixtures:** 9 JSON fixture files covering all supported hook event types
+  (PermissionRequest, PreToolUse, Notification, Stop, SubagentStop, UserPromptSubmit)
+- **Test harness:** `tests/simulate.py` with `--dry-run` (validate parsing without bot)
+  and normal mode (pipe fixtures through the real hook pipeline)
+- **Bug fix:** Corrected `test_hook_output_permission_deny` assertion from `reason` to
+  `message` — the hook spec uses `message` for deny decisions
+
 ## [0.4.2] 2026-04-27 — Increase plan approval timeout default to 1800 s
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`

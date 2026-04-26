@@ -1,0 +1,9 @@
+{
+  "session_id": "zxc098asd765",
+  "transcript_path": "/Users/user/.claude/projects/my-project/zxc098as-d765-4321-0987-654321098765.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "I've completed the refactoring. Here's a summary of what was changed:\n\n1. Extracted the database layer into a separate module\n2. Added connection pooling for better performance\n3. Updated all existing code to use the new API\n\nThe tests pass and the changes are ready for review."
+}

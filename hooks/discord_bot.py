@@ -86,6 +86,12 @@ async def _add_notify_users(thread: discord.Thread) -> None:
 # ── session helpers ────────────────────────────────────────────────────────────
 
 
+def _sanitize_fences(text: str) -> str:
+    """Replace triple backticks with fullwidth lookalikes so content
+    containing ``` doesn't break outer Discord code block fencing."""
+    return text.replace("```", "\uff40\uff40\uff40")
+
+
 def load_sessions() -> list[dict]:
     sessions = []
     for f in SESSIONS_DIR.glob("*.json"):
@@ -141,7 +147,7 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                     )
                     if len(inp) > 500:
                         inp = inp[:500] + "\n…"
-                    parts.append(f"🔧 **{name}**\n```json\n{inp}\n```")
+                    parts.append(f"🔧 **{name}**\n```json\n{_sanitize_fences(inp)}\n```")
                 elif block.get("type") == "tool_result":
                     result = block.get("content", "")
                     if isinstance(result, list):
@@ -151,7 +157,7 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                     result = str(result).strip()
                     if len(result) > 500:
                         result = result[:500] + "\n…"
-                    parts.append(f"📤 **Result**\n```\n{result}\n```")
+                    parts.append(f"📤 **Result**\n```\n{_sanitize_fences(result)}\n```")
             content = "\n".join(parts)
         if not content.strip():
             continue
@@ -420,11 +426,13 @@ async def handle_ipc_client(
                 )
             )
         else:
+            # Row 0: Approve + Deny
             view.add_item(
                 discord.ui.Button(
                     label="Approve",
                     style=discord.ButtonStyle.success,
                     custom_id=f"approve:{request_id}",
+                    row=0,
                 )
             )
             view.add_item(
@@ -432,17 +440,33 @@ async def handle_ipc_client(
                     label="Deny",
                     style=discord.ButtonStyle.danger,
                     custom_id=f"deny:{request_id}",
+                    row=0,
                 )
             )
-            for i, suggestion in enumerate(suggestions):
+            # Rows 1-4: suggestion buttons (max 4 to stay within 5 row limit)
+            for i, suggestion in enumerate(suggestions[:4]):
+                row = i + 1
                 label = _suggestion_label(suggestion, i)
                 view.add_item(
                     discord.ui.Button(
                         label=label,
                         style=discord.ButtonStyle.primary,
                         custom_id=f"suggest:{i}:{request_id}",
+                        row=row,
                     )
                 )
+                # Add Edit Rule button for addRules suggestions with ruleContent
+                if suggestion.get("type") == "addRules":
+                    rules = suggestion.get("rules", [])
+                    if rules and "ruleContent" in rules[0]:
+                        view.add_item(
+                            discord.ui.Button(
+                                label="Edit Rule",
+                                style=discord.ButtonStyle.secondary,
+                                custom_id=f"edit_rule:{i}:{request_id}",
+                                row=row,
+                            )
+                        )
             if suggestions:
                 _pending_suggestions[request_id] = suggestions
 
@@ -533,6 +557,27 @@ async def on_interaction(interaction: discord.Interaction):
             await interaction.response.send_message(
                 f"📝 Feedback submitted", ephemeral=True
             )
+        elif custom_id.startswith("edit_rule_modal:"):
+            rest = custom_id[len("edit_rule_modal:"):]
+            idx = int(rest.split(":", 1)[0])
+            request_id = rest.split(":", 1)[1]
+            rule_content = ""
+            for component_row in interaction.data.get("components", []):
+                for component in component_row.get("components", []):
+                    if component.get("custom_id") == "edit_rule_text":
+                        rule_content = component.get("value", "").strip()
+            suggestions = _pending_suggestions.get(request_id, [])
+            if idx < len(suggestions):
+                suggestion = json.loads(json.dumps(suggestions[idx]))
+                rules = suggestion.get("rules", [])
+                if rules:
+                    rules[0]["ruleContent"] = rule_content
+                decision = {"decision": "allow", "updatedPermissions": [suggestion]}
+                _pending_suggestions.pop(request_id, None)
+                (DECISION_DIR / f"{request_id}.json").write_text(json.dumps(decision))
+            await interaction.response.send_message(
+                f"✅ Rule updated", ephemeral=True
+            )
         return
 
     if interaction.type != discord.InteractionType.component:
@@ -581,6 +626,33 @@ async def on_interaction(interaction: discord.Interaction):
             )
         )
         await interaction.response.send_modal(modal)
+        return
+
+    if action == "edit_rule":
+        idx = int(parts[1])
+        request_id = parts[2]
+        suggestions = _pending_suggestions.get(request_id, [])
+        if idx < len(suggestions):
+            suggestion = suggestions[idx]
+            rules = suggestion.get("rules", [])
+            if rules and "ruleContent" in rules[0]:
+                current = rules[0]["ruleContent"]
+                modal = discord.ui.Modal(
+                    title="Edit Rule", custom_id=f"edit_rule_modal:{idx}:{request_id}"
+                )
+                modal.add_item(
+                    discord.ui.TextInput(
+                        label="Rule Content",
+                        custom_id="edit_rule_text",
+                        style=discord.TextStyle.long,
+                        default=current,
+                        required=False,
+                        placeholder="Leave empty for any match",
+                    )
+                )
+                await interaction.response.send_modal(modal)
+                return
+        await interaction.response.send_message("Suggestion expired.", ephemeral=True)
         return
 
     if action == "askq_submit":

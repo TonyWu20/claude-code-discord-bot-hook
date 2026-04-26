@@ -1,0 +1,41 @@
+{
+  "session_id": "abc123def456",
+  "transcript_path": "/Users/user/.claude/projects/my-project/abc123def-4567-89ab-cdef-0123456789ab.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm run build && npm test",
+    "description": "Build and test the project"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "rules": [
+        {
+          "toolName": "Bash",
+          "ruleContent": "npm test"
+        }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+    },
+    {
+      "type": "addRules",
+      "rules": [
+        {
+          "toolName": "Bash",
+          "ruleContent": "npm run build"
+        }
+      ],
+      "behavior": "allow",
+      "destination": "projectSettings"
+    },
+    {
+      "type": "setMode",
+      "mode": "acceptEdits",
+      "destination": "session"
+    }
+  ]
+}
