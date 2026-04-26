@@ -200,6 +200,53 @@ def to_yaml(obj: object, indent: int = 0) -> str:
         return f"{pad}{obj}"
 
 
+def _wrap_plan_for_discord(plan: str) -> str:
+    """Split plan content at its own ``` fence boundaries and emit alternating
+    ```markdown / ```lang blocks so inner code blocks don't break the outer
+    formatting.  Each block is properly closed before the next one opens."""
+    lines = plan.split("\n")
+    result: list[str] = []
+    in_fence = False
+    md_buf: list[str] = []
+
+    def flush_md() -> None:
+        # Strip leading blank lines (avoids empty blocks after a code fence close)
+        while md_buf and not md_buf[0].strip():
+            md_buf.pop(0)
+        if md_buf:
+            result.append("```markdown")
+            result.extend(md_buf)
+            result.append("```")
+        md_buf.clear()
+
+    for line in lines:
+        st = line.strip()
+        if st.startswith("```") and not in_fence:
+            flush_md()
+            in_fence = True
+            lang = st[3:].strip()
+            result.append(f"```{lang}")
+        elif st == "```" and in_fence:
+            result.append("```")
+            in_fence = False
+        else:
+            if in_fence:
+                result.append(line)
+            else:
+                md_buf.append(line)
+
+    flush_md()
+    while result and result[-1] == "":
+        result.pop()
+    return "\n".join(result)
+
+
+def _sanitize_fences(text: str) -> str:
+    """Replace triple backticks with fullwidth lookalikes (｀｀｀) so content
+    containing ``` doesn't break outer Discord code block fencing."""
+    return text.replace("```", "\uff40\uff40\uff40")
+
+
 def main() -> None:
     if not BOT_TOKEN or not CHANNEL_ID:
         sys.exit(0)
@@ -309,14 +356,15 @@ def main() -> None:
         footer = "\n".join(footer_lines)
         request_id = f"{session_label}:{int(time.time())}"
         if plan_content:
+            plan_content = _wrap_plan_for_discord(plan_content)
             plan_chunks = split_text(
                 plan_content, limit=1960
-            )  # headroom for ```markdown\n...\n```
-            # Send overflow chunks as plain notify messages
-            first_msg = f"{header}```markdown\n{plan_chunks[0]}\n```"
+            )
+            # Send overflow chunks as plain notify messages (already have their own fences)
+            first_msg = f"{header}{plan_chunks[0]}"
             for chunk in plan_chunks[1:]:
                 ipc({"type": "notify", "text": first_msg, "session": session_label})
-                first_msg = f"```markdown\n{chunk}\n```"
+                first_msg = chunk
             # Send the final chunk with buttons as the blocking approve message
             last = f"{first_msg}\n{footer}\nID: `{request_id}`"
         else:
@@ -343,15 +391,23 @@ def main() -> None:
                 hook_output(decision, reason, event, updated_permissions, updated_input)
         return
     elif tool == "Bash":
-        cmd = tool_input.get("command", "")
-        short_cmd = cmd[:1800] + ("..." if len(cmd) > 1800 else "")
-        msg_text = (
-            f"**Claude Code: Approve?**\n\n"
-            f"Tool: `Bash`\nCommand:\n```\n{short_cmd}\n```\n"
-            f"Session: `{session_label}`"
-        )
+        cmd = _sanitize_fences(tool_input.get("command", ""))
+        bash_header = "**Claude Code: Approve?**\n\nTool: `Bash`\nCommand:\n"
+        if len(cmd) > 1700:
+            cmd_chunks = split_text(cmd, limit=1700)
+            first_msg = f"{bash_header}```\n{cmd_chunks[0]}\n```"
+            for chunk in cmd_chunks[1:]:
+                ipc({"type": "notify", "text": first_msg, "session": session_label})
+                first_msg = f"```\n{chunk}\n```"
+            msg_text = first_msg + f"\nSession: `{session_label}`"
+        else:
+            msg_text = (
+                f"{bash_header}```\n{cmd}\n```\n"
+                f"Session: `{session_label}`"
+            )
     else:
         yaml_input = to_yaml(tool_input)
+        yaml_input = _sanitize_fences(yaml_input)
         if len(yaml_input) > 1800:
             yaml_input = yaml_input[:1800] + "\n..."
         msg_text = (
@@ -383,12 +439,44 @@ def main() -> None:
                 hook_output(decision, reason, event, None, updated_input)
         return
 
-    request_id = f"{session_label}:{int(time.time())}"
-    msg_text += f"\nID: `{request_id}`"
-
+    # Extract and display permission suggestion details for PermissionRequest events
     suggestions = (
         data.get("permission_suggestions", []) if event == "PermissionRequest" else []
     )
+    if suggestions and tool != "AskUserQuestion":
+        _dest_labels = {
+            "localSettings": "local settings",
+            "projectSettings": "project settings",
+            "userSettings": "user settings",
+            "session": "session only",
+        }
+        lines = ["\n**Permission Suggestions:**"]
+        for i, s in enumerate(suggestions):
+            stype = s.get("type", "")
+            dest = _dest_labels.get(s.get("destination", ""), s.get("destination", ""))
+            if stype == "addRules":
+                behavior = s.get("behavior", "allow")
+                rules = s.get("rules", [])
+                for rule in rules:
+                    tn = rule.get("toolName", "?")
+                    rc = rule.get("ruleContent", "")
+                    if rc:
+                        lines.append(f"  • Add {behavior} rule: `{tn}` → `{rc}` ({dest})")
+                    else:
+                        lines.append(f"  • Add {behavior} rule: `{tn}` (any) ({dest})")
+            elif stype == "setMode":
+                mode = s.get("mode", "?")
+                lines.append(f"  • Set mode: `{mode}` ({dest})")
+            elif stype in ("replaceRules", "removeRules"):
+                behavior = s.get("behavior", "?")
+                lines.append(f"  • {stype} ({behavior}) ({dest})")
+            elif stype in ("addDirectories", "removeDirectories"):
+                dirs = s.get("directories", [])
+                lines.append(f"  • {stype}: {', '.join(dirs)} ({dest})")
+        msg_text += "\n" + "\n".join(lines)
+
+    request_id = f"{session_label}:{int(time.time())}"
+    msg_text += f"\nID: `{request_id}`"
     result = ipc(
         {
             "type": "approve",

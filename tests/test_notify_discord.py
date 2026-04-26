@@ -23,7 +23,7 @@ def test_hook_output_permission_deny(capsys):
     out = json.loads(capsys.readouterr().out)
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PermissionRequest"
-    assert hs["decision"] == {"behavior": "deny", "reason": "no"}
+    assert hs["decision"] == {"behavior": "deny", "message": "no"}
 
 
 def test_hook_output_pretooluse_legacy(capsys):

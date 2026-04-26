@@ -1,0 +1,25 @@
+{
+  "session_id": "xyz789abc012",
+  "transcript_path": "/Users/user/.claude/projects/my-project/xyz789ab-c012-3456-7890-123456789abc.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PermissionRequest",
+  "tool_name": "Write",
+  "tool_input": {
+    "file_path": "/Users/user/projects/my-project/src/main.py",
+    "content": "def hello():\n    print(\"Hello, world!\")\n"
+  },
+  "permission_suggestions": [
+    {
+      "type": "addRules",
+      "rules": [
+        {
+          "toolName": "Write",
+          "ruleContent": "src/main.py"
+        }
+      ],
+      "behavior": "allow",
+      "destination": "localSettings"
+    }
+  ]
+}

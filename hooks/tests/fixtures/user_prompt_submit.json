@@ -1,0 +1,8 @@
+{
+  "session_id": "mno123pqr456",
+  "transcript_path": "/Users/user/.claude/projects/my-project/mno123pq-r456-7890-1234-567890123456.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Write a function to calculate the factorial of a number"
+}

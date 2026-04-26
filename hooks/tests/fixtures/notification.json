@@ -1,0 +1,9 @@
+{
+  "session_id": "lkj876hgf543",
+  "transcript_path": "/Users/user/.claude/projects/my-project/lkj876hg-f543-2109-8765-432109876543.jsonl",
+  "cwd": "/Users/user/projects/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "Notification",
+  "notification_type": "permission_prompt",
+  "notification_text": "Claude needs approval to run a Bash command"
+}
