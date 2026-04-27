@@ -1,5 +1,14 @@
 # Change Log
 
+## [0.6.0] 2026-04-27 — Native markdown rendering, fence-aware text splitting
+
+**Changed:** `hooks/notify_discord.py`
+**Why:** `_wrap_plan_for_discord()` wrapped plan content's markdown in ` ```markdown ` code blocks, preventing Discord from rendering it natively. `split_text()` could break inside ` ``` ` code blocks, leaving orphaned fences across Discord messages.
+**What:**
+- **Native markdown rendering:** Removed `_wrap_plan_for_discord()` — plan content is now sent as raw markdown, letting Discord render headers, bold, lists, and code blocks natively
+- **Fence-aware text splitting:** `split_text()` no longer splits inside ` ``` ` fenced code blocks — backs up to before the opening fence (or extends to include the closing fence if the block starts near the split point)
+- **Dead code removal:** `_wrap_plan_for_discord()` function removed
+
 ## [0.5.0] 2026-04-27 — Suggestion details, Edit Rule, code block nesting fix, test harness
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `tests/test_notify_discord.py`

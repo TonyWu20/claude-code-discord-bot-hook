@@ -150,8 +150,17 @@ def resolve_session_label(session_id: str) -> str:
     return session_id[:8]
 
 
+def _in_fence(text: str) -> bool:
+    """Return True if ``text`` is inside an open ``` fenced code block."""
+    count = 0
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            count += 1
+    return count % 2 == 1
+
+
 def split_text(text: str, limit: int = 1990) -> list[str]:
-    """Split text into chunks <= limit chars, breaking on newlines where possible."""
+    """Split text into chunks <= limit chars, never breaking inside ``` fences."""
     if len(text) <= limit:
         return [text]
     parts = []
@@ -163,6 +172,17 @@ def split_text(text: str, limit: int = 1990) -> list[str]:
         cut = text.rfind("\n", 0, limit)
         if cut <= 0:
             cut = limit
+        # Don't split inside a fenced code block
+        if cut > 0 and _in_fence(text[:cut]):
+            # Back up to the line before the opening ```
+            prev = text.rfind("\n```", 0, cut)
+            if prev > 0:
+                cut = prev
+            elif text.startswith("```"):
+                # Fence starts at beginning — find the closing ``` to include
+                closing = text.find("\n```\n", 4)
+                if closing > 0 and closing + 5 <= limit + 200:
+                    cut = closing + 5
         parts.append(text[:cut])
         text = text[cut:].lstrip("\n")
     return parts
@@ -198,47 +218,6 @@ def to_yaml(obj: object, indent: int = 0) -> str:
         return "\n".join(lines)
     else:
         return f"{pad}{obj}"
-
-
-def _wrap_plan_for_discord(plan: str) -> str:
-    """Split plan content at its own ``` fence boundaries and emit alternating
-    ```markdown / ```lang blocks so inner code blocks don't break the outer
-    formatting.  Each block is properly closed before the next one opens."""
-    lines = plan.split("\n")
-    result: list[str] = []
-    in_fence = False
-    md_buf: list[str] = []
-
-    def flush_md() -> None:
-        # Strip leading blank lines (avoids empty blocks after a code fence close)
-        while md_buf and not md_buf[0].strip():
-            md_buf.pop(0)
-        if md_buf:
-            result.append("```markdown")
-            result.extend(md_buf)
-            result.append("```")
-        md_buf.clear()
-
-    for line in lines:
-        st = line.strip()
-        if st.startswith("```") and not in_fence:
-            flush_md()
-            in_fence = True
-            lang = st[3:].strip()
-            result.append(f"```{lang}")
-        elif st == "```" and in_fence:
-            result.append("```")
-            in_fence = False
-        else:
-            if in_fence:
-                result.append(line)
-            else:
-                md_buf.append(line)
-
-    flush_md()
-    while result and result[-1] == "":
-        result.pop()
-    return "\n".join(result)
 
 
 def _sanitize_fences(text: str) -> str:
@@ -356,11 +335,10 @@ def main() -> None:
         footer = "\n".join(footer_lines)
         request_id = f"{session_label}:{int(time.time())}"
         if plan_content:
-            plan_content = _wrap_plan_for_discord(plan_content)
             plan_chunks = split_text(
                 plan_content, limit=1960
             )
-            # Send overflow chunks as plain notify messages (already have their own fences)
+            # Send overflow chunks as plain notify messages
             first_msg = f"{header}{plan_chunks[0]}"
             for chunk in plan_chunks[1:]:
                 ipc({"type": "notify", "text": first_msg, "session": session_label})
