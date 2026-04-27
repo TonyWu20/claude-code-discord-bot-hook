@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects commit `bc009c7` (2026-04-27, branch `main`).
+> **Version guard**: This document reflects commit `27302fc` (2026-04-28, branch `main`).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.
@@ -77,6 +77,7 @@ Key responsibilities:
 - **Slash commands** (via `app_commands`):
   - `/sessions` — lists recent Claude Code sessions.
   - `/history [session] [tail]` — shows recent conversation messages from a session's JSONL file, formatted in a thread.
+  - `/summary [date]` — aggregates per-project token usage, model breakdown, and session time for a given UTC date; posts the report as a new forum post.
 - **Button/modal interactions**: Handles `approve`, `deny`, `suggest` (permission edits), `askq` (question answering), `plan_feedback` (ExitPlanMode rejection), and `edit_rule` (rule editing before approval).
 - **Session threads**: Creates one Discord thread per Claude Code session, persisted to `/tmp/claude_discord_threads.json`.
 
@@ -125,7 +126,8 @@ All configuration is via environment variables:
 |---|---|---|---|
 | `DISCORD_BOT_TOKEN` | Yes | — | Discord bot auth token |
 | `DISCORD_CHANNEL_ID` | Yes | — | Channel for approval messages and threads |
-| `DISCORD_INSPECT_CHANNEL_ID` | No | `DISCORD_CHANNEL_ID` | Channel for `/sessions` and `/history` commands |
+| `DISCORD_INSPECT_CHANNEL_ID` | No | `DISCORD_CHANNEL_ID` | Channel for `/sessions`, `/history`, and `/summary` commands |
+| `DISCORD_SUMMARY_CHANNEL_ID` | No | `DISCORD_INSPECT_CHANNEL_ID` | Forum channel where `/summary` posts reports |
 | `DISCORD_NOTIFY_USER_IDS` | No | — | Comma-separated user IDs auto-added to threads |
 | `DISCORD_APPROVAL_TIMEOUT` | No | 120s | Timeout for normal approval decisions |
 | `DISCORD_PLAN_APPROVAL_TIMEOUT` | No | 1800s | Timeout for ExitPlanMode plan feedback |
@@ -144,6 +146,7 @@ All configuration is via environment variables:
 | `~/.claude/sessions/*.json` | Session metadata (read by `/sessions`) |
 | `~/.claude/projects/**/*.jsonl` | Conversation logs (read by `/history`) |
 | `~/.claude/plans/*.md` | Plan files (read for ExitPlanMode display) |
+| `~/.claude/history.jsonl` | Global command history (read by `/summary` to find sessions on a date) |
 
 ## Testing
 
@@ -155,7 +158,7 @@ cd hooks && uv run pytest ../tests/ -v
 python hooks/tests/simulate.py --dry-run hooks/tests/fixtures/permission_request_bash.json
 ```
 
-- `tests/test_discord_bot.py` — 11 tests covering thread cache, IPC, and interaction handling.
+- `tests/test_discord_bot.py` — 18 tests covering thread cache, IPC, interaction handling, and usage summary.
 - `tests/test_notify_discord.py` — 9 tests covering output formatting, bot lifecycle, and IPC.
 - `hooks/tests/simulate.py` — manual CLI harness that pipes fixtures through the real hook logic.
 
