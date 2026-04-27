@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -173,3 +174,153 @@ async def test_on_interaction_askq_select(decision_dir):
     await discord_bot.on_interaction(interaction)
     assert discord_bot._pending_questions["sel-req"]["answers"] == {"Which color?": "Red"}
     discord_bot._pending_questions.pop("sel-req", None)
+
+
+# ── helper tests ──────────────────────────────────────────────────────────────
+
+
+def test_format_duration():
+    assert discord_bot._format_duration(0) == "0s"
+    assert discord_bot._format_duration(1000) == "1s"
+    assert discord_bot._format_duration(30000) == "30s"
+    assert discord_bot._format_duration(60000) == "1m"
+    assert discord_bot._format_duration(90000) == "1m 30s"
+    assert discord_bot._format_duration(3600000) == "1h"
+    assert discord_bot._format_duration(3660000) == "1h 1m"
+    assert discord_bot._format_duration(7200000) == "2h"
+
+
+def test_format_number():
+    assert discord_bot._format_number(0) == "0"
+    assert discord_bot._format_number(100) == "100"
+    assert discord_bot._format_number(10000) == "10,000"
+
+
+def test_build_summary_text_empty():
+    result = discord_bot._build_summary_text({"date": "2026-04-28", "projects": []})
+    assert "No Claude Code activity" in result
+
+
+def test_build_summary_text_with_data():
+    summary = {
+        "date": "2026-04-28",
+        "projects": [
+            {
+                "name": "my-project",
+                "duration_ms": 7200000,
+                "total_tokens": 150000,
+                "models": {
+                    "model-a": {
+                        "total": 100000, "input_tokens": 80000, "output_tokens": 20000,
+                        "cache_read": 0, "cache_creation": 0,
+                    },
+                },
+            },
+        ],
+    }
+    result = discord_bot._build_summary_text(summary)
+    assert "Claude Code Summary" in result
+    assert "my-project" in result
+    assert "150,000" in result
+    assert "model-a" in result
+    assert "80,000" in result
+
+
+def test_summarize_usage_no_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(discord_bot, "HISTORY_FILE", tmp_path / "history.jsonl")
+    # File doesn't exist
+    result = discord_bot.summarize_usage("2026-04-28")
+    assert result["date"] == "2026-04-28"
+    assert result["projects"] == []
+
+
+def test_summarize_usage_with_data(tmp_path, monkeypatch):
+    # Use a timestamp that falls within 2026-04-28 UTC
+    from datetime import timezone
+    apr28 = datetime(2026, 4, 28, 12, 0, 0, tzinfo=timezone.utc)
+    ts_ms = int(apr28.timestamp() * 1000)
+
+    # Set up history.jsonl
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps({"project": "/home/user/proj-a", "sessionId": "sess-1", "timestamp": ts_ms})
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "HISTORY_FILE", history)
+
+    # Set up project directory
+    proj_dir = tmp_path / "projects" / "-home-user-proj-a"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-1.jsonl"
+    conv.write_text(
+        json.dumps({
+            "type": "user", "message": {"role": "user", "content": "hello"},
+            "timestamp": "2026-04-28T10:00:00Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-6",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            },
+            "timestamp": "2026-04-28T10:00:05Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "user", "message": {"role": "user", "content": "again"},
+            "timestamp": "2026-04-28T10:01:00Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "ok"}],
+                "model": "claude-sonnet-4-6",
+                "usage": {"input_tokens": 30, "output_tokens": 20},
+            },
+            "timestamp": "2026-04-28T10:01:10Z",
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", proj_dir.parent)
+
+    result = discord_bot.summarize_usage("2026-04-28")
+    assert result["date"] == "2026-04-28"
+    assert len(result["projects"]) == 1
+    proj = result["projects"][0]
+    assert proj["name"] == "proj-a"
+    assert proj["total_tokens"] == 200  # 100+50 + 30+20
+    assert proj["duration_ms"] == 70000  # 10:01:10 - 10:00:00 = 70s
+    assert set(proj["models"].keys()) == {"claude-opus-4-6", "claude-sonnet-4-6"}
+
+
+def test_summarize_usage_skips_wrong_date(tmp_path, monkeypatch):
+    """Sessions from a different date should be excluded."""
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps({"project": "/home/user/proj-a", "sessionId": "sess-2", "timestamp": 1700000000000})
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "HISTORY_FILE", history)
+
+    proj_dir = tmp_path / "projects" / "-home-user-proj-a"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-2.jsonl"
+    conv.write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant", "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-4-6",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+            },
+            "timestamp": "2026-04-27T23:59:00Z",  # wrong date
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", proj_dir.parent)
+
+    result = discord_bot.summarize_usage("2026-04-28")
+    assert result["projects"] == []
