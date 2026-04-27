@@ -183,6 +183,16 @@ def split_text(text: str, limit: int = 1990) -> list[str]:
                 closing = text.find("\n```\n", 4)
                 if closing > 0 and closing + 5 <= limit + 200:
                     cut = closing + 5
+                else:
+                    # Code block too long — close fence, reopen in next chunk
+                    fence_header = _extract_fence_lang(text)
+                    header_len = len(fence_header)
+                    inner = text.rfind("\n", header_len, limit - 3)
+                    if inner <= header_len:
+                        inner = limit - 3
+                    parts.append(text[:inner] + "\n```")
+                    text = fence_header.rstrip("\n") + "\n" + text[inner:].lstrip("\n")
+                    continue
         parts.append(text[:cut])
         text = text[cut:].lstrip("\n")
     return parts
@@ -224,6 +234,14 @@ def _sanitize_fences(text: str) -> str:
     """Replace triple backticks with fullwidth lookalikes (｀｀｀) so content
     containing ``` doesn't break outer Discord code block fencing."""
     return text.replace("```", "\uff40\uff40\uff40")
+
+
+def _extract_fence_lang(text: str) -> str:
+    """Return the opening fence line (e.g. '```python\n') from text starting with ```."""
+    newline = text.find("\n")
+    if newline == -1:
+        return "```\n"
+    return text[: newline + 1]
 
 
 def main() -> None:

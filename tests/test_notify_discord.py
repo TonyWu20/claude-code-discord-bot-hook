@@ -129,3 +129,84 @@ def test_ipc_socket_error():
         result = notify_discord.ipc({"type": "approve"})
 
     assert result is None
+
+
+# ── _extract_fence_lang ──────────────────────────────────────────────────
+
+
+def test_extract_fence_lang_bare():
+    assert notify_discord._extract_fence_lang("```\ncode") == "```\n"
+
+
+def test_extract_fence_lang_python():
+    assert notify_discord._extract_fence_lang("```python\ncode") == "```python\n"
+
+
+def test_extract_fence_lang_no_newline():
+    assert notify_discord._extract_fence_lang("```") == "```\n"
+
+
+# ── split_text long code blocks ──────────────────────────────────────────
+
+
+def test_split_text_long_code_block_balanced():
+    """When a single code block exceeds the limit, every chunk must have balanced fences."""
+    lines = [f"    result_{i} = compute(input_data)" for i in range(300)]
+    code_block = "```python\n" + "\n".join(lines) + "\n```"
+    text = "Here is code:\n\n" + code_block + "\n\nDone."
+    parts = notify_discord.split_text(text, limit=1990)
+    for i, part in enumerate(parts):
+        assert part.count("```") % 2 == 0, f"Part {i} has unbalanced fences: {part!r}"
+
+
+def test_split_text_preserves_fence_lang():
+    """Long code block split across chunks reopens with the language specifier."""
+    lines = [f"print({i})" for i in range(400)]
+    code_block = "```python\n" + "\n".join(lines) + "\n```"
+    text = "Intro\n" + code_block + "\nOutro"
+    parts = notify_discord.split_text(text, limit=1990)
+    # At least one chunk after the first should reopen with ```python
+    reopened = any(
+        p.lstrip().startswith("```python") for p in parts[1:]
+    )
+    assert reopened, "No chunk after the first has ```python"
+
+
+def test_split_text_normal_intact():
+    """Short code block within limit stays as one chunk unchanged."""
+    text = "Before\n```python\nx = 1\n```\nAfter"
+    parts = notify_discord.split_text(text, limit=1990)
+    assert len(parts) == 1
+    assert parts[0] == text
+
+
+def test_split_text_no_fences_no_regression():
+    """Plain text (no fences) splits correctly on newlines."""
+    lines = [f"line {i}" for i in range(100)]
+    text = "\n".join(lines)
+    parts = notify_discord.split_text(text, limit=500)
+    assert len(parts) > 1
+    for p in parts:
+        assert len(p) <= 500
+
+
+def test_split_text_underline_inside_fence():
+    """x86_64-linux inside a long code block must stay inside fences after
+    splitting — otherwise Discord renders _64_ as italics."""
+    # Build a long code block with x86_64-linux near the split boundary
+    lines = [f"item {i}" for i in range(200)]
+    # Position x86_64-linux where the split is likely to land
+    lines.insert(100, "platform = x86_64-linux")
+    code_block = "```\n" + "\n".join(lines) + "\n```"
+    text = "Before\n\n" + code_block + "\n\nAfter"
+    parts = notify_discord.split_text(text, limit=1000)
+    assert len(parts) > 1, "Should split into multiple chunks"
+    for i, part in enumerate(parts):
+        assert part.count("```") % 2 == 0, \
+            f"Part {i} has unbalanced fences: {part!r}"
+        # x86_64-linux must be inside a code block if present
+        if "x86_64-linux" in part:
+            idx = part.index("x86_64-linux")
+            prefix = part[:idx]
+            assert notify_discord._in_fence(prefix), \
+                f"x86_64-linux outside fence in part {i}"

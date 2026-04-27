@@ -1,5 +1,14 @@
 # Change Log
 
+## [0.6.1] 2026-04-27 — Fix long code block split causing unescaped underscores in Discord
+
+**Changed:** `hooks/notify_discord.py`, `tests/test_notify_discord.py`
+**Why:** When a fenced code block was too long and its closing \`\`\` was beyond the split window, `split_text()` would leave it open. Content like `x86_64-linux` in the next chunk appeared outside a code block, causing Discord to render `_64_` as italic.
+**What:**
+- **Long code block fence closure:** `split_text()` now closes the fence before the split point and reopens with the language specifier in the next chunk, preventing mid-block content from leaking into Discord's markdown parser
+- **`_extract_fence_lang()`:** New helper to preserve the language tag (e.g., `python`) when reopening a code block after a split
+- **Test coverage:** Added tests for `_extract_fence_lang`, balanced fences across chunks, fence lang preservation, and underscore escaping (`x86_64-linux` case)
+
 ## [0.6.0] 2026-04-27 — Native markdown rendering, fence-aware text splitting
 
 **Changed:** `hooks/notify_discord.py`
