@@ -5,11 +5,13 @@ Discord bot for Claude Code session inspection.
 Commands:
   /sessions          — list active/recent sessions (ephemeral, inspect channel)
   /history [session] — show conversation history in a thread (inspect channel)
+  /summary [date]    — post project usage summary for a date (forum channel)
 
 Required env vars:
   DISCORD_BOT_TOKEN
   DISCORD_CHANNEL_ID        — approvals channel
   DISCORD_INSPECT_CHANNEL_ID — inspection channel (falls back to DISCORD_CHANNEL_ID)
+  DISCORD_SUMMARY_CHANNEL_ID — forum channel for summaries (falls back to INSPECT_CHANNEL_ID)
   DISCORD_NOTIFY_USER_IDS   — comma-separated user IDs to auto-add to session threads (optional)
 
 The bot handles Approve/Deny button interactions from notify_discord.py
@@ -30,6 +32,7 @@ from discord.ext import commands
 BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 INSPECT_CHANNEL_ID = int(os.environ.get("DISCORD_INSPECT_CHANNEL_ID", CHANNEL_ID))
+SUMMARY_CHANNEL_ID = int(os.environ.get("DISCORD_SUMMARY_CHANNEL_ID", INSPECT_CHANNEL_ID))
 APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120"))
 PLAN_APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "1800"))
 _NOTIFY_USER_IDS: list[int] = [
@@ -43,6 +46,7 @@ READY_FILE = "/tmp/claude_discord_bot.ready"
 
 SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
+HISTORY_FILE = Path.home() / ".claude" / "history.jsonl"
 DECISION_DIR = Path.home() / ".claude" / "discord-decisions"
 DECISION_DIR.mkdir(exist_ok=True)
 THREAD_CACHE_FILE = Path("/tmp/claude_discord_threads.json")
@@ -182,6 +186,183 @@ def format_message(m: dict) -> str:
     return f"{header}\n{content}"
 
 
+# ── usage summary ──────────────────────────────────────────────────────────────
+
+from datetime import timedelta, timezone
+
+
+def summarize_usage(date_str: str | None = None) -> dict:
+    """Aggregate Claude Code usage by project for a given date.
+
+    Returns dict with:
+      date: str — the date queried (YYYY-MM-DD)
+      projects: list[dict] — one per project, containing name, duration_ms,
+               total_tokens, models breakdown (sorted by total_tokens desc)
+    """
+    # Parse target date (always UTC)
+    if date_str and date_str.lower() != "today":
+        target = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    else:
+        target = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = target + timedelta(days=1)
+    start_ms = int(target.timestamp() * 1000)
+    end_ms = int(day_end.timestamp() * 1000)
+    date_prefix = target.strftime("%Y-%m-%d")
+
+    # Step 1: find unique (project, sessionId) pairs on target date
+    session_keys: set[tuple[str, str]] = set()
+    try:
+        for line in HISTORY_FILE.read_text().splitlines():
+            entry = json.loads(line)
+            ts = entry.get("timestamp", 0)
+            if start_ms <= ts < end_ms:
+                session_keys.add((entry["project"], entry["sessionId"]))
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    if not session_keys:
+        return {"date": date_prefix, "projects": []}
+
+    # Step 2: for each session, parse JSONL and aggregate by project
+    projects: dict[str, dict] = {}
+
+    for project_path, session_id in session_keys:
+        jsonl_path = find_conversation_file(session_id)
+        if not jsonl_path:
+            continue
+
+        proj_name = Path(project_path).name
+        if proj_name not in projects:
+            projects[proj_name] = {
+                "name": proj_name,
+                "total_tokens": 0,
+                "models": {},
+                "session_durations": [],
+            }
+
+        proj = projects[proj_name]
+        session_timestamps: list[datetime] = []
+
+        for line in jsonl_path.read_text().splitlines():
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = d.get("timestamp", "")
+            if not ts.startswith(date_prefix):
+                continue
+
+            # Track timestamps for per-session duration on this date
+            if d.get("type") in ("user", "assistant"):
+                try:
+                    t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    session_timestamps.append(t)
+                except ValueError:
+                    pass
+
+            # Extract per-turn token usage from assistant messages
+            if d.get("type") == "assistant":
+                msg = d.get("message", {})
+                model = msg.get("model", "unknown")
+                usage = msg.get("usage", {})
+
+                input_t = usage.get("input_tokens", 0) or 0
+                output_t = usage.get("output_tokens", 0) or 0
+                cache_read = usage.get("cache_read_input_tokens", 0) or 0
+                cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                total = input_t + output_t + cache_read + cache_creation
+
+                if model not in proj["models"]:
+                    proj["models"][model] = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read": 0,
+                        "cache_creation": 0,
+                        "total": 0,
+                    }
+                m = proj["models"][model]
+                m["input_tokens"] += input_t
+                m["output_tokens"] += output_t
+                m["cache_read"] += cache_read
+                m["cache_creation"] += cache_creation
+                m["total"] += total
+                proj["total_tokens"] += total
+
+        # Compute per-session duration (on this date only)
+        if len(session_timestamps) >= 2:
+            session_timestamps.sort()
+            duration = int(
+                (session_timestamps[-1] - session_timestamps[0]).total_seconds()
+                * 1000
+            )
+            proj["session_durations"].append(duration)
+
+    # Step 3: finalize and sort
+    result_projects = []
+    for proj in projects.values():
+        proj["duration_ms"] = sum(proj.pop("session_durations"))
+        result_projects.append(proj)
+
+    result_projects.sort(key=lambda p: p["total_tokens"], reverse=True)
+    return {"date": date_prefix, "projects": result_projects}
+
+
+def _format_duration(ms: int) -> str:
+    """Format milliseconds to a human-readable duration string."""
+    seconds = ms // 1000
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    seconds %= 60
+    if minutes < 60:
+        return f"{minutes}m {seconds}s" if seconds else f"{minutes}m"
+    hours = minutes // 60
+    minutes %= 60
+    if minutes:
+        return f"{hours}h {minutes}m"
+    return f"{hours}h"
+
+
+def _format_number(n: int) -> str:
+    """Format a number with comma separators (e.g. 12345 -> '12,345')."""
+    return f"{n:,}"
+
+
+def _build_summary_text(summary: dict) -> str:
+    """Build the formatted Discord message text from a summary dict."""
+    lines = [f"📊 **Claude Code Summary — {summary['date']}**\n"]
+    projects = summary["projects"]
+
+    if not projects:
+        lines.append("No Claude Code activity found for this date.")
+        return "\n".join(lines)
+
+    for i, proj in enumerate(projects, 1):
+        lines.append(f"**{i}. {proj['name']}**")
+        lines.append(f"⏱️ Session time: {_format_duration(proj['duration_ms'])}")
+        lines.append(
+            f"🔤 Total tokens: {_format_number(proj['total_tokens'])}"
+        )
+
+        models = proj.get("models", {})
+        if models:
+            lines.append("Models:")
+            for model_name, m in sorted(
+                models.items(), key=lambda x: x[1]["total"], reverse=True
+            ):
+                total = _format_number(m["total"])
+                inp = _format_number(m["input_tokens"])
+                out = _format_number(m["output_tokens"])
+                lines.append(
+                    f"• {model_name}: {total} tokens"
+                    f" (in: {inp}, out: {out})"
+                )
+        lines.append("")  # blank line between projects
+
+    return "\n".join(lines)
+
+
 # ── slash commands ─────────────────────────────────────────────────────────────
 
 
@@ -275,6 +456,50 @@ async def slash_history(
         await thread.send(format_message(m))
 
     await interaction.followup.send(f"History opened in {thread.mention}")
+
+
+@tree.command(name="summary", description="Summarize Claude Code usage by project for a date")
+@app_commands.describe(
+    date="Date in YYYY-MM-DD format (default: today)",
+)
+async def slash_summary(
+    interaction: discord.Interaction, date: str = "today"
+):
+    await interaction.response.defer(ephemeral=True)
+
+    summary = summarize_usage(date if date != "today" else None)
+
+    # Post summary to the summary channel (forum)
+    channel = bot.get_channel(SUMMARY_CHANNEL_ID)
+    if not channel:
+        await interaction.followup.send(
+            "Summary channel not found. Check DISCORD_SUMMARY_CHANNEL_ID.",
+        )
+        return
+
+    text = _build_summary_text(summary)
+
+    try:
+        if isinstance(channel, discord.ForumChannel):
+            created = await channel.create_thread(
+                name=f"Claude Code Summary — {summary['date']}",
+                content=text,
+            )
+            # ThreadWithMessage is a named tuple (thread, message)
+            thread = created.thread if hasattr(created, "thread") else created[0]
+        else:
+            thread = await channel.create_thread(
+                name=f"Claude Code Summary — {summary['date']}",
+                type=discord.ChannelType.public_thread,
+            )
+            await thread.send(text)
+        await interaction.followup.send(
+            f"Summary posted in {thread.mention}"
+        )
+    except (discord.HTTPException, TypeError) as e:
+        await interaction.followup.send(
+            f"Failed to post summary: {e}"
+        )
 
 
 # ── session thread helpers ─────────────────────────────────────────────────────

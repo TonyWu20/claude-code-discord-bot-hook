@@ -1,5 +1,16 @@
 # Change Log
 
+## [0.7.0] 2026-04-28 — `/summary` slash command for daily project usage
+
+**Changed:** `hooks/discord_bot.py`, `tests/test_discord_bot.py`, `hooks/pyproject.toml`
+**Why:** Users wanted a way to see how much they used Claude Code per project on a given day — project name, tokens, model breakdown, and session time — without manually scanning through session files.
+**What:**
+- **`/summary [date]` slash command:** Cross-references `~/.claude/history.jsonl` with per-session JSONL conversation logs to aggregate per-project token usage and session duration for a given UTC date (defaults to today). Posts the formatted report as a new forum post in `DISCORD_SUMMARY_CHANNEL_ID`.
+- **`summarize_usage()`:** Core aggregation function — scans history to find sessions on the target date, deduplicates by `(project, sessionId)`, parses JSONL files to extract per-model token usage and message timestamps, and sums by project.
+- **Helper functions:** `_format_duration()` (ms to human-readable), `_format_number()` (comma separators), `_build_summary_text()` (Discord markdown formatting).
+- **New env var:** `DISCORD_SUMMARY_CHANNEL_ID` (falls back to `DISCORD_INSPECT_CHANNEL_ID`).
+- **Tests:** 7 new unit tests for all helper functions and `summarize_usage()`.
+
 ## [0.6.1] 2026-04-27 — Fix long code block split causing unescaped underscores in Discord
 
 **Changed:** `hooks/notify_discord.py`, `tests/test_notify_discord.py`
