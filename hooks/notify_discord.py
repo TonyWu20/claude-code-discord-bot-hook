@@ -27,8 +27,14 @@ READY_FILE = "/tmp/claude_discord_bot.ready"
 VENV_PYTHON = str(Path(__file__).parent / ".venv/bin/python")
 BOT_SCRIPT = str(Path(__file__).parent / "discord_bot.py")
 
+DISCORD_BOT_HOST = os.environ.get("DISCORD_BOT_HOST", "")
+DISCORD_BOT_REMOTE = os.environ.get("DISCORD_BOT_REMOTE", "")
+
 
 def ensure_bot_running() -> None:
+    if DISCORD_BOT_HOST and DISCORD_BOT_REMOTE:
+        # Remote mode — bot lifecycle managed on the server machine
+        return
     pid_path = Path(PID_FILE)
     if pid_path.exists():
         try:
@@ -64,11 +70,18 @@ def ensure_bot_running() -> None:
 
 def ipc(req: dict, timeout: int | None = None) -> Optional[dict]:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        if DISCORD_BOT_HOST:
+            host, port = DISCORD_BOT_HOST.split(":", 1)
+            sock_family = socket.AF_INET
+            sock_addr = (host, int(port))
+        else:
+            sock_family = socket.AF_UNIX
+            sock_addr = SOCKET_PATH
+        with socket.socket(sock_family, socket.SOCK_STREAM) as s:
             if timeout is None:
                 timeout = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120")) + 5
             s.settimeout(timeout)
-            s.connect(SOCKET_PATH)
+            s.connect(sock_addr)
             s.sendall((json.dumps(req) + "\n").encode())
             buf = b""
             while True:

@@ -1,5 +1,16 @@
 # Change Log
 
+## [0.8.0] 2026-05-02 — Multi-machine TCP IPC support
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `ARCHITECTURE.md`
+**Why:** Users wanted to run the Discord bot on a different machine than Claude Code — e.g., a server in the same ZeroTier/Tailscale/LAN network — so approval flows work remotely without installing the bot on every client.
+**What:**
+- **`discord_bot.py`:** `run_socket_server()` now branches on `DISCORD_BOT_HOST` — when set, binds a TCP server (host:port) instead of a Unix socket. PID file and ready file handling is identical in both modes.
+- **`notify_discord.py`:** `ipc()` connects via `AF_INET` when `DISCORD_BOT_HOST` is set, `AF_UNIX` otherwise. Same JSON-line protocol over both transports.
+- **`notify_discord.py`:** `ensure_bot_running()` skips local bot spawn when `DISCORD_BOT_REMOTE=true` — the remote machine manages its own bot lifecycle.
+- **New env vars:** `DISCORD_BOT_HOST` (TCP host:port, e.g. `0.0.0.0:9876`) and `DISCORD_BOT_REMOTE` (skip local spawn).
+- **Backward-compatible:** When both are unset (default), behavior is identical to before — Unix socket, local bot spawn.
+
 ## [0.7.0] 2026-04-28 — `/summary` slash command for daily project usage
 
 **Changed:** `hooks/discord_bot.py`, `tests/test_discord_bot.py`, `hooks/pyproject.toml`

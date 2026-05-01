@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects commit `27302fc` (2026-04-28, branch `main`).
+> **Version guard**: This document reflects commit `2d7dc96` (2026-05-02, branch `multi-machine-tcp-ipc`).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.
@@ -52,8 +52,8 @@ Claude Code invokes this as a subprocess for each registered hook event. It **mu
 
 Key responsibilities:
 
-- **Bot lifecycle**: `ensure_bot_running()` spawns `discord_bot.py` as a detached child if not already running.
-- **IPC to bot**: Sends JSON over a Unix domain socket (`/tmp/claude_discord.sock`), reads back one JSON response line.
+- **Bot lifecycle**: `ensure_bot_running()` spawns `discord_bot.py` as a detached child if not already running. When `DISCORD_BOT_REMOTE=true`, skips local spawn (remote machine manages its own bot).
+- **IPC to bot**: Sends JSON over a Unix domain socket (`/tmp/claude_discord.sock`) by default. When `DISCORD_BOT_HOST` is set, connects via TCP instead. Reads back one JSON response line.
 - **Event dispatch**: Routes on `hook_event_name`:
   - `Stop` / `SubagentStop` — fire-and-forget notification of the assistant's last message.
   - `PermissionRequest` / `PreToolUse` — blocking approval flow: sends a rich message with buttons to Discord, polls for a decision file, prints the decision JSON to stdout.
@@ -71,7 +71,7 @@ This is a long-lived `discord.py` bot that holds the Discord WebSocket connectio
 
 Key responsibilities:
 
-- **IPC socket server**: Listens on `/tmp/claude_discord.sock`. Each connection processes one JSON request:
+- **IPC socket server**: Listens on `/tmp/claude_discord.sock` (or `DISCORD_BOT_HOST` when set for TCP). Each connection processes one JSON request:
   - `{"type": "notify", ...}` — posts a text message to the session's Discord thread.
   - `{"type": "approve", ...}` — posts a message with interactive buttons, then polls a decision file and returns the result.
 - **Slash commands** (via `app_commands`):
@@ -88,7 +88,7 @@ Key responsibilities:
 ```
 Claude Code fires hook event (e.g., Stop)
 → notify_discord.py reads JSON from stdin
-→ ipc({"type": "notify", ...}) → Unix socket → discord_bot.py
+→ ipc({"type": "notify", ...}) → Unix socket or TCP → discord_bot.py
 → bot.posts message to session's Discord thread
 → notify_discord.py exits
 ```
@@ -98,7 +98,7 @@ Claude Code fires hook event (e.g., Stop)
 ```
 Claude Code fires PermissionRequest or PreToolUse
 → notify_discord.py builds rich message with tool details
-→ ipc({"type": "approve", ...}) → Unix socket → discord_bot.py
+→ ipc({"type": "approve", ...}) → Unix socket or TCP → discord_bot.py
 → bot creates/gets session thread, posts message with Approve/Deny buttons
 → bot polls ~/.claude/discord-decisions/<id>.json every 500ms
    └─ User clicks button in Discord → on_interaction() fires
@@ -131,6 +131,8 @@ All configuration is via environment variables:
 | `DISCORD_NOTIFY_USER_IDS` | No | — | Comma-separated user IDs auto-added to threads |
 | `DISCORD_APPROVAL_TIMEOUT` | No | 120s | Timeout for normal approval decisions |
 | `DISCORD_PLAN_APPROVAL_TIMEOUT` | No | 1800s | Timeout for ExitPlanMode plan feedback |
+| `DISCORD_BOT_HOST` | No | Unix socket | TCP `host:port` for multi-machine IPC (e.g. `0.0.0.0:9876`). When set, both bot and shim use TCP instead of Unix socket. |
+| `DISCORD_BOT_REMOTE` | No | — | When set (e.g. `true`), skip local bot spawn — the remote machine manages bot lifecycle. |
 
 ### Runtime files
 
