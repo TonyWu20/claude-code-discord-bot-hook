@@ -41,6 +41,7 @@ _NOTIFY_USER_IDS: list[int] = [
     if uid.strip()
 ]
 SOCKET_PATH = "/tmp/claude_discord.sock"
+DISCORD_BOT_HOST = os.environ.get("DISCORD_BOT_HOST", "")
 PID_FILE = "/tmp/claude_discord_bot.pid"
 READY_FILE = "/tmp/claude_discord_bot.ready"
 
@@ -734,8 +735,12 @@ async def handle_ipc_client(
 
 
 async def run_socket_server() -> None:
-    Path(SOCKET_PATH).unlink(missing_ok=True)
-    server = await asyncio.start_unix_server(handle_ipc_client, path=SOCKET_PATH)
+    if DISCORD_BOT_HOST:
+        host, port = DISCORD_BOT_HOST.split(":", 1)
+        server = await asyncio.start_server(handle_ipc_client, host=host, port=int(port))
+    else:
+        Path(SOCKET_PATH).unlink(missing_ok=True)
+        server = await asyncio.start_unix_server(handle_ipc_client, path=SOCKET_PATH)
     Path(PID_FILE).write_text(str(os.getpid()))
     Path(READY_FILE).write_text("ready")
     async with server:
