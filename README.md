@@ -62,7 +62,17 @@ and exposes slash commands for session inspection.
 
 ## Setup
 
-### 1. Install from Claude Code Marketplace
+### 1. Install uv (required)
+
+The hook scripts use `uv run` to auto-manage the Python environment.
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Verify: `uv --version`
+
+### 2. Install from Claude Code Marketplace
 
 In Claude Code, run:
 
@@ -101,18 +111,10 @@ export DISCORD_NOTIFY_USER_IDS="123456789012345678"      # comma-separated Disco
 
 `DISCORD_NOTIFY_USER_IDS` tells the bot which users to automatically add to each new session thread. This is essential if you want to receive notifications promptly — without being added to the thread, you won't get push notifications for messages posted there.
 
-### 4. Install Dependencies
+### 4. Verify Setup
 
-```sh
-cd ~/.claude/hooks/hooks
-uv sync
-```
-
-If `uv` is not installed:
-
-```sh
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+The plugin hooks use `uv run` to automatically create the Python venv and install dependencies
+on first invocation — no manual `uv sync` needed. Confirm `uv` is on your PATH.
 
 ## Runtime Files
 

@@ -2,10 +2,11 @@
 
 ## [0.8.1] 2026-05-08 — Fix plugin hook paths for marketplace portability
 
-**Changed:** `hooks/hooks.json`
-**Why:** The plugin's `hooks.json` hardcoded `~/.claude/hooks/` paths, which only worked on the author's machine via a symlink. When installed from the marketplace, Claude Code places plugin files in a different directory, so the hook commands failed silently.
+**Changed:** `hooks/hooks.json`, `README.md`
+**Why:** The plugin's `hooks.json` hardcoded `~/.claude/hooks/.venv/bin/python` paths, which only worked via a local symlink on the author's machine. The `.venv` directory is not shipped with the marketplace plugin, so hook commands failed silently on fresh installs.
 **What:**
-- Replaced all `~/.claude/hooks/` references with `${CLAUDE_PLUGIN_ROOT}/hooks/` so scripts are resolved relative to the plugin's actual installation directory, regardless of where the marketplace installs them.
+- Replaced all `.venv/bin/python` invocations with `uv run --directory ${CLAUDE_PLUGIN_ROOT}/hooks python`, which auto-creates the venv from `pyproject.toml` on first run.
+- README: moved `uv` installation to a prerequisite step (it's required, not optional). Removed the manual `uv sync` step — `uv run` handles this automatically.
 
 ## [0.8.0] 2026-05-02 — Multi-machine TCP IPC support
 
