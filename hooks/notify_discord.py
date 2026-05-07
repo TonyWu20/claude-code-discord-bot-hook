@@ -145,22 +145,23 @@ def hook_output(
 
 
 def resolve_session_label(session_id: str) -> str:
+    host = socket.gethostname().split(".")[0]
     sessions_dir = Path.home() / ".claude" / "sessions"
     try:
         pid_file = sessions_dir / f"{os.getppid()}.json"
         if pid_file.exists():
             data = json.loads(pid_file.read_text())
-            return data.get("name") or session_id[:8]
+            return f"{host}-{data.get('name') or session_id[:8]}"
         for f in sessions_dir.glob("*.json"):
             try:
                 data = json.loads(f.read_text())
                 if data.get("sessionId") == session_id:
-                    return data.get("name") or session_id[:8]
+                    return f"{host}-{data.get('name') or session_id[:8]}"
             except (json.JSONDecodeError, OSError):
                 continue
     except OSError:
         pass
-    return session_id[:8]
+    return f"{host}-{session_id[:8]}"
 
 
 def _in_fence(text: str) -> bool:

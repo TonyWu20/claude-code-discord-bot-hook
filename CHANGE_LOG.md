@@ -1,5 +1,13 @@
 # Change Log
 
+## [0.9.0] 2026-05-08 — Hostname prefix in session labels and request IDs
+
+**Changed:** `hooks/notify_discord.py`, `ARCHITECTURE.md`, `README.md`
+**Why:** When using the hook across multiple machines, session labels and request IDs had no indication of which machine they came from, making multi-machine setups confusing to read.
+**What:**
+- Prepend the short hostname (e.g., `tony-mbp-`) to the session label produced by `resolve_session_label()`. The hostname prefix automatically propagates to request IDs, Discord thread names, stop flags, decision files, and IPC routing keys — everything that derives from the session label.
+- Updated docs to reflect the new label format.
+
 ## [0.8.1] 2026-05-08 — Fix plugin hook paths for marketplace portability
 
 **Changed:** `hooks/hooks.json`, `README.md`

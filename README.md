@@ -12,7 +12,7 @@ commands to inspect active sessions and conversation history.
 - **`AskUserQuestion` support** — Claude's multi-choice questions appear as Discord Select menus; an "Answer with text" button opens a Modal for free-text responses.
 - **`ExitPlanMode` support** — plan approval requests show the full plan content in Discord with Approve, Reject, and Give Feedback buttons. "Give Feedback" opens a Modal so you can type revision instructions directly.
 - **History view with tail** — the `/history` slash command supports an optional `tail` parameter to see only the latest updates from your session, rendered in a Discord thread.
-- **Thread-based organization** — each session gets its own Discord thread, labeled with the session name set via `/rename` in Claude Code, keeping your server tidy.
+- **Thread-based organization** — each session gets its own Discord thread, labeled with the hostname and session name (e.g., `Session tony-mbp-my-project`), keeping your server tidy even across multiple machines.
 
 ## Architecture
 
