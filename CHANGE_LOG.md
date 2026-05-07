@@ -1,5 +1,12 @@
 # Change Log
 
+## [0.8.1] 2026-05-08 — Fix plugin hook paths for marketplace portability
+
+**Changed:** `hooks/hooks.json`
+**Why:** The plugin's `hooks.json` hardcoded `~/.claude/hooks/` paths, which only worked on the author's machine via a symlink. When installed from the marketplace, Claude Code places plugin files in a different directory, so the hook commands failed silently.
+**What:**
+- Replaced all `~/.claude/hooks/` references with `${CLAUDE_PLUGIN_ROOT}/hooks/` so scripts are resolved relative to the plugin's actual installation directory, regardless of where the marketplace installs them.
+
 ## [0.8.0] 2026-05-02 — Multi-machine TCP IPC support
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `ARCHITECTURE.md`

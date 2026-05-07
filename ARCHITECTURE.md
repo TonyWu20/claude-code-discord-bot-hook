@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects commit `2d7dc96` (2026-05-02, branch `multi-machine-tcp-ipc`).
+> **Version guard**: This document reflects commit `00a1c33` (2026-05-08).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.
