@@ -3,7 +3,7 @@
   "transcript_path": "/Users/user/.claude/projects/my-project/bnm789vf-r432-0987-6543-210987654321.jsonl",
   "cwd": "/Users/user/projects/my-project",
   "permission_mode": "default",
-  "hook_event_name": "PreToolUse",
+  "hook_event_name": "PermissionRequest",
   "tool_name": "Bash",
   "tool_input": {
     "command": "git log --oneline --graph --all --decorate -20",

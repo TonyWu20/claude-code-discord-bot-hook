@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects the `HEAD` at **0.10.1** (2026-05-08).
+> **Version guard**: This document reflects the `HEAD` at **0.11.0** (2026-05-09).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.
@@ -57,7 +57,7 @@ Key responsibilities:
 - **IPC to bot**: Sends JSON over a Unix domain socket (`/tmp/claude_discord.sock`) by default. When `DISCORD_BOT_HOST` is set, connects via TCP instead. Reads back one JSON response line.
 - **Event dispatch**: Routes on `hook_event_name`:
   - `Stop` / `SubagentStop` — fire-and-forget notification of the assistant's last message.
-  - `PermissionRequest` / `PreToolUse` — blocking approval flow: sends a rich message with buttons to Discord, polls for a decision file, prints the decision JSON to stdout.
+  - `PermissionRequest` — blocking approval flow: sends a rich message with buttons to Discord, polls for a decision file, prints the decision JSON to stdout.
   - Other events (e.g., `Notification`) are silently ignored.
 - **Special tool handling**:
   - `AskUserQuestion` renders multi-choice questions that become Discord Select menus.
@@ -88,6 +88,7 @@ Key responsibilities:
 - **Tmux pane discovery**: Via `discover_tmux_target_for_session()` — walks the process ancestor tree via `ps -o ppid=` and matches against `tmux list-panes -F '#{pane_pid}'`. Returns a tmux target like `"0:1.1"` for `tmux send-keys`.
 - **Message forwarding**: `on_message` event handler detects user messages in synced forum threads and forwards them to the tmux pane via `tmux send-keys -t <target> <text> Enter`. Newlines in messages become `C-j` (literal line breaks in the TUI) so multiline text submits as a single prompt. If the cached `tmux_target` is empty, it attempts on-demand discovery via `discover_tmux_target_for_session()` before giving up.
 - **Submission confirmation**: After forwarding, `_confirm_message_submitted()` polls the session's JSONL conversation file for growth. Adds ✅ reaction only when Claude has processed the message. Retries Enter up to 4 times if the file doesn't grow, with ⚠️ fallback if all retries fail.
+- **Conversation context for approvals**: `_get_conversation_context()` reads the session JSONL to extract messages from the last user prompt onward, and sends them as separate messages before the approval message (with buttons). The approver sees the full conversation that led to the tool request — nothing is trimmed.
 
 ## Data Flow
 
@@ -104,7 +105,7 @@ Claude Code fires hook event (e.g., Stop)
 ### Approval Flow (blocking)
 
 ```
-Claude Code fires PermissionRequest or PreToolUse
+Claude Code fires PermissionRequest
 → notify_discord.py builds rich message with tool details
 → ipc({"type": "approve", ...}) → Unix socket or TCP → discord_bot.py
 → bot creates/gets session thread, posts message with Approve/Deny buttons

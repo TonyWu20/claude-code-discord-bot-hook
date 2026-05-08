@@ -111,6 +111,52 @@ async def test_handle_ipc_approve_timeout(decision_dir, monkeypatch):
     assert "Timed out" in response["reason"]
 
 
+async def test_handle_ipc_approve_with_context(decision_dir, tmp_path, monkeypatch):
+    """Conversation context is prepended to the approval message when available."""
+    thread = AsyncMock()
+    monkeypatch.setattr(discord_bot.bot, "get_channel", lambda _: MagicMock())
+
+    # Set up a real conversation file matching the session_id
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "test-session.jsonl"
+    conv.write_text(
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "what is in this file?"},
+            "timestamp": "2026-05-08T10:00:00Z",
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+
+    # Write decision file so the poll loop resolves immediately
+    (decision_dir / "ctx-test-1.json").write_text(
+        json.dumps({"decision": "allow", "reason": "yes"})
+    )
+
+    with patch("discord_bot.get_or_create_session_thread", return_value=thread):
+        reader = _make_reader({
+            "type": "approve",
+            "request_id": "ctx-test-1",
+            "session": "s1",
+            "session_id": "test-session",
+            "text": "**Claude Code: Approve?**\nTool: `Read`\nSession: `s1`\nID: `ctx-test-1`",
+            "tool_name": "Read",
+            "tool_input": {"path": "file.txt"},
+        })
+        writer = _make_writer()
+        await discord_bot.handle_ipc_client(reader, writer)
+
+    # Context should be sent as a separate message before the approval message
+    assert thread.send.call_count >= 2
+    context_text = thread.send.call_args_list[0][0][0]
+    approval_text = thread.send.call_args_list[-1][0][0]
+    assert "Context from your last prompt" in context_text
+    assert "what is in this file?" in context_text
+    assert "Approve?" in approval_text  # original approval text in the last message
+
+
 # ── on_interaction ─────────────────────────────────────────────────────────────
 
 def _make_interaction(custom_id: str) -> MagicMock:
@@ -456,6 +502,233 @@ def test_thread_cache_migration(tmp_path, monkeypatch):
     # Cache file should have been rewritten with session_id key
     rewritten = json.loads(cache.read_text())
     assert "my-real-uuid-12345" in rewritten
+
+
+# ── _find_last_user_message_idx ─────────────────────────────────────────────────
+
+
+def test_find_last_user_idx_empty():
+    assert discord_bot._find_last_user_message_idx([]) == -1
+
+
+def test_find_last_user_idx_no_user():
+    msgs = [{"role": "assistant", "content": "hi"}]
+    assert discord_bot._find_last_user_message_idx(msgs) == -1
+
+
+def test_find_last_user_idx_found():
+    msgs = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+    ]
+    assert discord_bot._find_last_user_message_idx(msgs) == 2
+
+
+def test_find_last_user_idx_single():
+    msgs = [{"role": "user", "content": "only"}]
+    assert discord_bot._find_last_user_message_idx(msgs) == 0
+
+
+# ── _get_conversation_context ──────────────────────────────────────────────────
+
+
+def test_context_empty_session_id():
+    """Returns None when session_id is empty."""
+    assert discord_bot._get_conversation_context("") is None
+
+
+def test_context_no_conv_file(tmp_path, monkeypatch):
+    """Returns None when conversation file not found."""
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path)
+    assert discord_bot._get_conversation_context("nonexistent") is None
+
+
+def test_context_empty_file(tmp_path, monkeypatch):
+    """Returns None when conversation file has no messages."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-1.jsonl"
+    conv.write_text("")
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    assert discord_bot._get_conversation_context("sess-1") is None
+
+
+def test_context_no_user_messages(tmp_path, monkeypatch):
+    """Returns None when only assistant messages exist (no user prompt to anchor on)."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-1.jsonl"
+    conv.write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hello"}],
+            },
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    assert discord_bot._get_conversation_context("sess-1") is None
+
+
+def test_context_from_last_user_message(tmp_path, monkeypatch):
+    """Returns context starting from the last user message, skipping earlier ones."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-1.jsonl"
+    conv.write_text(
+        # Earlier messages — should be excluded from context
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "earlier prompt"},
+            "timestamp": "2026-05-08T10:00:00Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "earlier response"}],
+            },
+            "timestamp": "2026-05-08T10:00:05Z",
+        })
+        + "\n"
+        # Last user message — context should start here
+        + json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "latest prompt"},
+            "timestamp": "2026-05-08T10:01:00Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "latest response"}],
+            },
+            "timestamp": "2026-05-08T10:01:05Z",
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    result = discord_bot._get_conversation_context("sess-1")
+    assert result is not None
+    assert "Context from your last prompt" in result
+    assert "latest prompt" in result
+    assert "latest response" in result
+    assert "earlier prompt" not in result
+    assert "earlier response" not in result
+
+
+def test_context_with_tool_blocks(tmp_path, monkeypatch):
+    """Context includes tool_use and tool_result blocks."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-2.jsonl"
+    conv.write_text(
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "run a command"},
+            "timestamp": "2026-05-08T10:00:00Z",
+        })
+        + "\n"
+        + json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                    {"type": "tool_result", "content": "file1 file2"},
+                ],
+            },
+            "timestamp": "2026-05-08T10:00:05Z",
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    result = discord_bot._get_conversation_context("sess-2")
+    assert result is not None
+    assert "Context from your last prompt" in result
+    assert "run a command" in result
+    assert "Let me check" in result
+    assert "🔧" in result  # tool_use indicator
+    assert "📤" in result  # tool_result indicator
+
+
+def test_context_returns_full_content(tmp_path, monkeypatch):
+    """_get_conversation_context returns the full context without per-message truncation.
+    Chunking is handled by split_text in the caller (handle_ipc_client)."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-3.jsonl"
+    long_text = "x" * 2000
+    conv.write_text(
+        json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": long_text},
+            "timestamp": "2026-05-08T10:00:00Z",
+        })
+        + "\n"
+    )
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    result = discord_bot._get_conversation_context("sess-3")
+    assert result is not None
+    # Full content returned without truncation - chunking is done by split_text in caller
+    assert "xxx" in result
+    assert len(result) > 1900
+
+
+def test_context_split_text_balanced(tmp_path, monkeypatch):
+    """split_text chunks from context must have balanced fences."""
+    proj_dir = tmp_path / "projects" / "proj"
+    proj_dir.mkdir(parents=True)
+    conv = proj_dir / "sess-fence.jsonl"
+    entries = [
+        json.dumps({
+            "type": "user", "message": {"role": "user", "content": "test"},
+            "timestamp": "2026-05-08T10:00:00Z",
+        })
+    ]
+    for i in range(3):
+        entries.append(json.dumps({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": f"long thinking block {i}: " + "x" * 100},
+                    {"type": "text", "text": f"response {i}: " + "y" * 100},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": f"echo command_{i}: " + "z" * 400}},
+                    {"type": "tool_result", "content": f"output {i}: " + "w" * 200},
+                ],
+            },
+            "timestamp": f"2026-05-08T10:00:0{i+1}Z",
+        }))
+    conv.write_text("\n".join(entries) + "\n")
+    monkeypatch.setattr(discord_bot, "PROJECTS_DIR", tmp_path / "projects")
+    context = discord_bot._get_conversation_context("sess-fence")
+    assert context is not None
+    # split_text must produce balanced chunks
+    for chunk in discord_bot.split_text(context):
+        assert chunk.count("```") % 2 == 0, "Fences must be balanced per chunk"
+        in_fence = False
+        for line in chunk.split("\n"):
+            if line.strip().startswith("```"):
+                in_fence = not in_fence
+        assert not in_fence, "No chunk may end inside an open code block"
+        assert len(chunk) <= 1990, f"Chunk exceeds Discord limit: {len(chunk)} chars"
+
+
+def test_format_message_no_truncation():
+    """format_message returns full formatted message without truncation."""
+    content = "```json\n" + ("x" * 2000) + "\n```"
+    msg = {"role": "assistant", "content": content}
+    result = discord_bot.format_message(msg)
+    assert "x" * 2000 in result, "Full content must be preserved"
+    assert result.count("```") % 2 == 0
 
 
 # ── _resolve_session ───────────────────────────────────────────────────────────

@@ -1,5 +1,49 @@
 # Change Log
 
+## [0.11.0] 2026-05-09 — Conversation context, zero truncation, PreToolUse cleanup
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `tests/test_discord_bot.py`,
+`tests/test_notify_discord.py`, `ARCHITECTURE.md`, `README.md`
+**Added:** `tests/__init__.py`
+
+**Why:** Three issues:
+1. PermissionRequest showed only tool details — no conversation context leading up to the request.
+2. `_sanitize_fences()` replaced ``` with ugly fullwidth ｀｀｀, losing syntax highlighting.
+3. `PreToolUse` dead code in notify_discord.py blocked Claude Code's dialog prompt when triggered.
+
+**What:**
+
+### Conversation context
+- Implemented `_find_last_user_message_idx()` and `_get_conversation_context()`.
+- Context (messages from last user prompt onward: text, thinking, tool_use, tool_result) sent as separate messages before the approval message in both the session thread and the synced forum thread.
+- If context exceeds Discord's message limit, it's split via `split_text()` across multiple messages — nothing is truncated.
+
+### Inner code blocks
+- All code-block-wrapped content (tool_use JSON, tool_results, Bash commands, YAML input) now sanitizes inner ``` to fullwidth ｀｀｀ via inline `.replace('```', '｀｀｀')`. This is the only approach that reliably prevents inner ``` from breaking outer code block fencing on Discord, especially for JSON blocks where ``` appears inside string values.
+- `_sanitize_fences()` function removed. `_safe_code_block()` retained as an internal helper for `split_text()` but not used for display blocks.
+
+### No truncation anywhere
+- Removed all per-block truncations from `extract_messages()` (was 1500 chars on tool_use, tool_result, thinking).
+- Removed per-message truncation from `_get_conversation_context()` (was 500 chars).
+- Removed truncation from `format_message()` (was 1800 chars).
+- Removed truncation from `_activate_sync()` first content chunk (was 1900 chars).
+- Removed truncation from forum text forwarding in `handle_ipc_client` (was 1900 chars).
+- Removed YAML input truncation in `notify_discord.py` (was 1800 chars).
+- All size management handled by `split_text()` — content is split across multiple messages, never cut.
+
+### PreToolUse dead code removed
+- `hook_output()` no longer accepts an `event` parameter — only `PermissionRequest` format.
+- Event routing simplified: `if event not in ("PreToolUse", "PermissionRequest")` → `if event != "PermissionRequest"`.
+- Updated README: PreToolUse removed from Supported Hook Events table; Notification row removed (never implemented).
+
+### `split_text()` fence boundary fix
+- When `split_text()` splits inside a code block, it now properly closes the fence at the cut point and reopens it in the next chunk — no orphaned fences or leaked content at chunk boundaries.
+- `split_text()` added to `discord_bot.py` (was only in `notify_discord.py`).
+
+### Test infrastructure
+- `tests/__init__.py` added, `pytest.ini` gains `pythonpath = hooks`.
+- 69 tests pass (was 56 passing + 12 failing).
+
 ## [0.10.2] — Fix multi-question AskUserQuestion answer submission via PermissionRequest
 
 **Changed:** `hooks/notify_discord.py`, `tests/test_discord_bot.py`, `tests/test_notify_discord.py`

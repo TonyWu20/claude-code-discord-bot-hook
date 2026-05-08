@@ -46,9 +46,7 @@ and exposes slash commands for session inspection.
 
 | Event               | Behaviour                                                     |
 | ------------------- | ------------------------------------------------------------- |
-| `PermissionRequest` | Posts Approve / Deny / permission-suggestion buttons; blocks until clicked or timeout |
-| `PreToolUse`        | Intercepts `AskUserQuestion` (Select menus + text modal) and `ExitPlanMode` (plan content + Approve / Reject / Give Feedback) |
-| `Notification`      | Posts a notification message to the session thread            |
+| `PermissionRequest` | Posts Approve / Deny / permission-suggestion buttons; also handles `AskUserQuestion` (Select menus + text modal) and `ExitPlanMode` (plan content + Approve / Reject / Give Feedback) |
 | `Stop`              | Posts the assistant's final message to the session thread     |
 | `SubagentStop`      | Same as `Stop`, labelled with the agent type                  |
 

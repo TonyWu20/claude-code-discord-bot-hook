@@ -149,10 +149,139 @@ def _save_sync_state(state: dict) -> None:
 # ── session helpers ────────────────────────────────────────────────────────────
 
 
-def _sanitize_fences(text: str) -> str:
-    """Replace triple backticks with fullwidth lookalikes so content
-    containing ``` doesn't break outer Discord code block fencing."""
-    return text.replace("```", "\uff40\uff40\uff40")
+def _safe_code_block(content: str, lang: str = "") -> str:
+    """Wrap content in a fenced code block, splitting at inner ``` boundaries
+    so Discord renders nested code blocks correctly.
+
+    Instead of replacing ``` with ugly fullwidth lookalikes, this closes
+    the outer block before each inner fence, lets the inner block render
+    natively, then reopens the outer block afterward. No blank lines
+    between consecutive blocks.
+    """
+    if not any(line.strip().startswith("```") for line in content.split("\n")):
+        return f"```{lang}\n{content}\n```"
+
+    open_fence = f"```{lang}" if lang else "```"
+    segments: list[tuple[str, str]] = []
+    lines = content.split("\n")
+    i = 0
+    buf: list[str] = []
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            if buf:
+                segments.append(("text", "\n".join(buf)))
+                buf = []
+            j = i + 1
+            while j < len(lines):
+                if lines[j].strip().startswith("```"):
+                    break
+                j += 1
+            if j < len(lines):
+                segments.append(("code", "\n".join(lines[i : j + 1])))
+                i = j + 1
+                continue
+            else:
+                segments.append(("code", "\n".join(lines[i:])))
+                break
+        else:
+            buf.append(lines[i])
+        i += 1
+
+    if buf:
+        segments.append(("text", "\n".join(buf)))
+
+    result: list[str] = []
+    for seg_type, seg_text in segments:
+        if seg_type == "text" and seg_text.strip():
+            result.append(seg_text)
+        elif seg_type == "code":
+            result.append(seg_text)
+
+    return "\n".join(result)
+
+
+def _find_last_user_message_idx(messages: list[dict]) -> int:
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            return i
+    return -1
+
+
+def _get_conversation_context(session_id: str) -> str | None:
+    if not session_id:
+        return None
+    conv_file = find_conversation_file(session_id)
+    if not conv_file:
+        return None
+    messages = extract_messages(conv_file)
+    if not messages:
+        return None
+    last_user_idx = _find_last_user_message_idx(messages)
+    if last_user_idx < 0:
+        return None
+    context_msgs = messages[last_user_idx:]
+    parts = ["**Context from your last prompt:**"]
+    for m in context_msgs:
+        role = "\ud83d\udc64 You" if m["role"] == "user" else "\ud83e\udd16 Claude"
+        parts.append(f"\n{role}:\n{m['content']}")
+    return "".join(parts)
+
+
+def _in_fence(text: str) -> bool:
+    """Return True if ``text`` is inside an open ``` fenced code block."""
+    count = 0
+    for line in text.split("\n"):
+        if line.strip().startswith("```"):
+            count += 1
+    return count % 2 == 1
+
+
+def _extract_fence_lang(text: str) -> str:
+    """Return the opening fence line (e.g. '```python\n') from text starting with ```."""
+    newline = text.find("\n")
+    if newline == -1:
+        return "```\n"
+    return text[: newline + 1]
+
+
+def split_text(text: str, limit: int = 1990) -> list[str]:
+    """Split text into chunks <= limit chars, never breaking inside ``` fences."""
+    if len(text) <= limit:
+        return [text]
+    parts = []
+    while text:
+        if len(text) <= limit:
+            parts.append(text)
+            break
+        cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        if cut > 0 and _in_fence(text[:cut]):
+            prev = text.rfind("\n```", 0, cut)
+            if prev > 0:
+                # Inside a code block — close fence at cut, reopen in next chunk
+                fence_header = _extract_fence_lang(text[prev:].lstrip("\n"))
+                parts.append(text[:cut] + "\n```")
+                text = fence_header + text[cut:].lstrip("\n")
+                continue
+            elif text.startswith("```"):
+                closing = text.find("\n```\n", 4)
+                if closing > 0 and closing + 5 <= limit + 200:
+                    cut = closing + 5
+                else:
+                    fence_header = _extract_fence_lang(text)
+                    header_len = len(fence_header)
+                    inner = text.rfind("\n", header_len, limit - 3)
+                    if inner <= header_len:
+                        inner = limit - 3
+                    parts.append(text[:inner] + "\n```")
+                    text = fence_header.rstrip("\n") + "\n" + text[inner:].lstrip("\n")
+                    continue
+        parts.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    return parts
 
 
 def load_sessions() -> list[dict]:
@@ -276,9 +405,7 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                     inp = json.dumps(
                         block.get("input", {}), indent=2, ensure_ascii=False
                     )
-                    if len(inp) > 1500:
-                        inp = inp[:1500] + "\n…"
-                    parts.append(f"🔧 **{name}**\n```json\n{_sanitize_fences(inp)}\n```")
+                    parts.append(f"🔧 **{name}**\n```json\n{inp.replace('```', '｀｀｀')}\n```")
                 elif block.get("type") == "tool_result":
                     result = block.get("content", "")
                     if isinstance(result, list):
@@ -286,15 +413,11 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                             b.get("text", "") for b in result if isinstance(b, dict)
                         )
                     result = str(result).strip()
-                    if len(result) > 1500:
-                        result = result[:1500] + "\n…"
-                    parts.append(f"📤 **Result**\n```\n{_sanitize_fences(result)}\n```")
+                    parts.append(f"📤 **Result**\n```\n{result.replace('```', '｀｀｀')}\n```")
                 elif block.get("type") == "thinking":
                     thinking = block.get("thinking", "")
                     if thinking:
-                        if len(thinking) > 1500:
-                            thinking = thinking[:1500] + "\n…"
-                        parts.append(f"💭 *{_sanitize_fences(thinking)}*")
+                        parts.append(f"💭 *{thinking}*")
             content = "\n".join(parts)
         if not content.strip():
             continue
@@ -314,8 +437,6 @@ def format_message(m: dict) -> str:
     else:
         header = "## 🤖 Claude"
     content = m["content"]
-    if len(content) > 1800:
-        content = content[:1800] + "\n…"
     return f"{header}\n{content}"
 
 
@@ -701,11 +822,10 @@ async def _activate_sync(
     if not chunks:
         chunks = ["**Session sync started — type in this thread to send prompts to Claude.**"]
 
-    # Trim first chunk to fit Discord's 2000-char limit
-    first_content = chunks[0]
-    if len(first_content) > 1900:
-        first_content = first_content[:1900] + "\n…"
-    overflow = chunks[1:] if len(chunks) > 1 else []
+    # Split first chunk if it exceeds Discord's limit
+    first_parts = split_text(chunks[0])
+    first_content = first_parts[0]
+    overflow = first_parts[1:] + chunks[1:] if len(chunks) > 1 else first_parts[1:]
 
     try:
         created = await channel.create_thread(
@@ -1169,6 +1289,13 @@ async def handle_ipc_client(
             if suggestions:
                 _pending_suggestions[request_id] = suggestions
 
+        # Send conversation context before the approval message
+        if session_id:
+            context = _get_conversation_context(session_id)
+            if context:
+                for chunk in split_text(context):
+                    await thread.send(chunk)
+
         await thread.send(text, view=view)
 
         # Forward a notification to the synced forum thread
@@ -1176,14 +1303,17 @@ async def handle_ipc_client(
         if forum_state and forum_state.get("synced"):
             ftid = forum_state.get("forum_thread_id")
             if ftid:
-                forum_text = text
-                if len(forum_text) > 1900:
-                    forum_text = forum_text[:1900] + "\n…"
                 try:
                     fchan = bot.get_channel(forum_state.get("forum_channel_id", 0))
                     if fchan:
                         fthread = await bot.fetch_channel(ftid)
-                        await fthread.send(forum_text)
+                        if session_id:
+                            forum_context = _get_conversation_context(session_id)
+                            if forum_context:
+                                for chunk in split_text(forum_context):
+                                    await fthread.send(chunk)
+                        for chunk in split_text(text):
+                            await fthread.send(chunk)
                 except (discord.NotFound, discord.HTTPException):
                     pass
 

@@ -11,7 +11,7 @@ import notify_discord
 # ── hook_output ────────────────────────────────────────────────────────────────
 
 def test_hook_output_permission_allow(capsys):
-    notify_discord.hook_output("allow", "ok", "PermissionRequest")
+    notify_discord.hook_output("allow", "ok")
     out = json.loads(capsys.readouterr().out)
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PermissionRequest"
@@ -19,38 +19,29 @@ def test_hook_output_permission_allow(capsys):
 
 
 def test_hook_output_permission_deny(capsys):
-    notify_discord.hook_output("deny", "no", "PermissionRequest")
+    notify_discord.hook_output("deny", "no")
     out = json.loads(capsys.readouterr().out)
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PermissionRequest"
     assert hs["decision"] == {"behavior": "deny", "message": "no"}
 
 
-def test_hook_output_pretooluse_legacy(capsys):
-    notify_discord.hook_output("allow", "", "PreToolUse")
+def test_hook_output_permission_with_updated_permissions(capsys):
+    notify_discord.hook_output("allow", "ok", updated_permissions=[{"type": "addRules"}])
     out = json.loads(capsys.readouterr().out)
     hs = out["hookSpecificOutput"]
-    assert hs["hookEventName"] == "PreToolUse"
-    assert hs["permissionDecision"] == "allow"
+    assert hs["hookEventName"] == "PermissionRequest"
+    assert hs["decision"]["updatedPermissions"] == [{"type": "addRules"}]
 
 
 def test_hook_output_with_updated_input_permission(capsys):
     ui = {"questions": [{"question": "Color?", "options": [{"label": "Red"}]}], "answers": {"Color?": "Red"}}
-    notify_discord.hook_output("allow", "", "PermissionRequest", updated_input=ui)
+    notify_discord.hook_output("allow", "", updated_input=ui)
     out = json.loads(capsys.readouterr().out)
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PermissionRequest"
     assert hs["decision"]["updatedInput"] == ui
     assert hs["updatedInput"] == ui  # top-level for AskUserQuestion compatibility
-
-
-def test_hook_output_with_updated_input_pretooluse(capsys):
-    ui = {"allowedPrompts": []}
-    notify_discord.hook_output("allow", "", "PreToolUse", updated_input=ui)
-    out = json.loads(capsys.readouterr().out)
-    hs = out["hookSpecificOutput"]
-    assert hs["hookEventName"] == "PreToolUse"
-    assert hs["updatedInput"] == ui
 
 
 # ── ensure_bot_running ─────────────────────────────────────────────────────────

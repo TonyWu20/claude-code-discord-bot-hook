@@ -20,9 +20,9 @@ NOTIFY_SCRIPT = Path(__file__).parent.parent / "notify_discord.py"
 FIXTURE_DESCRIPTIONS: dict[str, str] = {
     "permission_request_bash.json": "PermissionRequest for Bash with suggestions",
     "permission_request_write.json": "PermissionRequest for Write with suggestions",
-    "pretooluse_askuserquestion.json": "PreToolUse for AskUserQuestion",
-    "pretooluse_exitplanmode.json": "PreToolUse for ExitPlanMode",
-    "pretooluse_bash.json": "PreToolUse for Bash (no suggestions)",
+    "pretooluse_askuserquestion.json": "PermissionRequest for AskUserQuestion",
+    "pretooluse_exitplanmode.json": "PermissionRequest for ExitPlanMode",
+    "pretooluse_bash.json": "PermissionRequest for Bash (no suggestions)",
     "notification.json": "Notification event (fire-and-forget)",
     "stop.json": "Stop with last_assistant_message",
     "subagent_stop.json": "SubagentStop with last_assistant_message",
@@ -77,35 +77,20 @@ def dry_run(fixture: dict, name: str) -> None:
                 print(f"       {rule.get('toolName')} -> {rc or '(any)'}")
 
     print(f"\n-- hook_output would be --")
-    event = fixture.get("hook_event_name", "")
-    if event == "PermissionRequest":
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": {
-                            "behavior": "allow",
-                            "reason": "Approved via Discord",
-                        },
-                    }
-                },
-                indent=2,
-            )
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": {
+                        "behavior": "allow",
+                        "reason": "Approved via Discord",
+                    },
+                }
+            },
+            indent=2,
         )
-    else:
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "allow",
-                        "permissionDecisionReason": "Approved via Discord",
-                    }
-                },
-                indent=2,
-            )
-        )
+    )
 
     print(f"\n-- IPC message would be sent to bot --")
     print("(connect to Discord, post message with interactive buttons)")

@@ -114,39 +114,27 @@ def ipc_notify_parts(
 def hook_output(
     decision: str,
     reason: str = "",
-    event: str = "PermissionRequest",
     updated_permissions: Optional[list] = None,
     updated_input: Optional[dict] = None,
 ) -> None:
-    if event == "PermissionRequest":
-        behavior = "allow" if decision == "allow" else "deny"
-        d: dict = {"behavior": behavior}
-        if reason:
-            if behavior == "deny":
-                d["message"] = reason
-            else:
-                d["reason"] = reason
-        if behavior == "allow" and updated_permissions:
-            d["updatedPermissions"] = updated_permissions
-        if updated_input is not None:
-            d["updatedInput"] = updated_input
-        hook_specific_output: dict = {
-            "hookEventName": "PermissionRequest",
-            "decision": d,
-        }
-        if updated_input is not None:
-            hook_specific_output["updatedInput"] = updated_input
-        print(json.dumps({"hookSpecificOutput": hook_specific_output}))
-    else:
-        # PreToolUse format
-        hs: dict = {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": decision,
-            "permissionDecisionReason": reason,
-        }
-        if updated_input is not None:
-            hs["updatedInput"] = updated_input
-        print(json.dumps({"hookSpecificOutput": hs}))
+    behavior = "allow" if decision == "allow" else "deny"
+    d: dict = {"behavior": behavior}
+    if reason:
+        if behavior == "deny":
+            d["message"] = reason
+        else:
+            d["reason"] = reason
+    if behavior == "allow" and updated_permissions:
+        d["updatedPermissions"] = updated_permissions
+    if updated_input is not None:
+        d["updatedInput"] = updated_input
+    hook_specific_output: dict = {
+        "hookEventName": "PermissionRequest",
+        "decision": d,
+    }
+    if updated_input is not None:
+        hook_specific_output["updatedInput"] = updated_input
+    print(json.dumps({"hookSpecificOutput": hook_specific_output}))
 
 
 def resolve_session_label(session_id: str) -> str:
@@ -256,10 +244,13 @@ def split_text(text: str, limit: int = 1990) -> list[str]:
             cut = limit
         # Don't split inside a fenced code block
         if cut > 0 and _in_fence(text[:cut]):
-            # Back up to the line before the opening ```
             prev = text.rfind("\n```", 0, cut)
             if prev > 0:
-                cut = prev
+                # Inside a code block — close fence at cut, reopen in next chunk
+                fence_header = _extract_fence_lang(text[prev:].lstrip("\n"))
+                parts.append(text[:cut] + "\n```")
+                text = fence_header + text[cut:].lstrip("\n")
+                continue
             elif text.startswith("```"):
                 # Fence starts at beginning — find the closing ``` to include
                 closing = text.find("\n```\n", 4)
@@ -312,10 +303,57 @@ def to_yaml(obj: object, indent: int = 0) -> str:
         return f"{pad}{obj}"
 
 
-def _sanitize_fences(text: str) -> str:
-    """Replace triple backticks with fullwidth lookalikes (｀｀｀) so content
-    containing ``` doesn't break outer Discord code block fencing."""
-    return text.replace("```", "\uff40\uff40\uff40")
+def _safe_code_block(content: str, lang: str = "") -> str:
+    """Wrap content in a fenced code block, splitting at inner ``` boundaries
+    so Discord renders nested code blocks correctly.
+
+    Instead of replacing ``` with ugly fullwidth lookalikes, this closes
+    the outer block before each inner fence, lets the inner block render
+    natively, then reopens the outer block afterward. No blank lines
+    between consecutive blocks.
+    """
+    if not any(line.strip().startswith("```") for line in content.split("\n")):
+        return f"```{lang}\n{content}\n```"
+
+    open_fence = f"```{lang}" if lang else "```"
+    segments: list[tuple[str, str]] = []
+    lines = content.split("\n")
+    i = 0
+    buf: list[str] = []
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped.startswith("```"):
+            if buf:
+                segments.append(("text", "\n".join(buf)))
+                buf = []
+            j = i + 1
+            while j < len(lines):
+                if lines[j].strip().startswith("```"):
+                    break
+                j += 1
+            if j < len(lines):
+                segments.append(("code", "\n".join(lines[i : j + 1])))
+                i = j + 1
+                continue
+            else:
+                segments.append(("code", "\n".join(lines[i:])))
+                break
+        else:
+            buf.append(lines[i])
+        i += 1
+
+    if buf:
+        segments.append(("text", "\n".join(buf)))
+
+    result: list[str] = []
+    for seg_type, seg_text in segments:
+        if seg_type == "text" and seg_text.strip():
+            result.append(seg_text)
+        elif seg_type == "code":
+            result.append(seg_text)
+
+    return "\n".join(result)
 
 
 def _extract_fence_lang(text: str) -> str:
@@ -400,7 +438,7 @@ def main() -> None:
             ipc_notify_parts(parts, session_label, session_id, tmux_target)
         sys.exit(0)
 
-    if event not in ("PreToolUse", "PermissionRequest"):
+    if event != "PermissionRequest":
         sys.exit(0)
 
     # Check for stop flag before processing tool approval
@@ -408,7 +446,7 @@ def main() -> None:
     if flag_path.exists():
         reason = flag_path.read_text().strip() or "Stopped via Discord"
         flag_path.unlink(missing_ok=True)
-        hook_output("deny", reason, event)
+        hook_output("deny", reason)
         sys.exit(0)
 
     tool = data.get("tool_name", "")
@@ -477,31 +515,28 @@ def main() -> None:
             updated_input = result.get("updatedInput")
             if decision != "ask":
                 updated_permissions = result.get("updatedPermissions")
-                hook_output(decision, reason, event, updated_permissions, updated_input)
+                hook_output(decision, reason, updated_permissions=updated_permissions, updated_input=updated_input)
         return
     elif tool == "Bash":
-        cmd = _sanitize_fences(tool_input.get("command", ""))
+        cmd = tool_input.get("command", "")
         bash_header = "**Claude Code: Approve?**\n\nTool: `Bash`\nCommand:\n"
         if len(cmd) > 1700:
             cmd_chunks = split_text(cmd, limit=1700)
-            first_msg = f"{bash_header}```\n{cmd_chunks[0]}\n```"
+            first_msg = f"{bash_header}```\n{cmd_chunks[0].replace('```', '｀｀｀')}\n```"
             for chunk in cmd_chunks[1:]:
                 ipc({"type": "notify", "text": first_msg, "session": session_label, "session_id": session_id, "tmux_target": tmux_target or ""})
-                first_msg = f"```\n{chunk}\n```"
+                first_msg = f"```\n{chunk.replace('```', '｀｀｀')}\n```"
             msg_text = first_msg + f"\nSession: `{session_label}`"
         else:
             msg_text = (
-                f"{bash_header}```\n{cmd}\n```\n"
+                f"{bash_header}```\n{cmd.replace('```', '｀｀｀')}\n```\n"
                 f"Session: `{session_label}`"
             )
     else:
         yaml_input = to_yaml(tool_input)
-        yaml_input = _sanitize_fences(yaml_input)
-        if len(yaml_input) > 1800:
-            yaml_input = yaml_input[:1800] + "\n..."
         msg_text = (
             f"**Claude Code: Approve?**\n\n"
-            f"Tool: `{tool}`\nInput:\n```\n{yaml_input}\n```\n"
+            f"Tool: `{tool}`\nInput:\n```\n{yaml_input.replace('```', '｀｀｀')}\n```\n"
             f"Session: `{session_label}`"
         )
 
@@ -527,7 +562,7 @@ def main() -> None:
             reason = result.get("reason", "")
             updated_input = result.get("updatedInput")
             if decision != "ask":
-                hook_output(decision, reason, event, None, updated_input)
+                hook_output(decision, reason, updated_input=updated_input)
         return
 
     # Extract and display permission suggestion details for PermissionRequest events
@@ -591,10 +626,10 @@ def main() -> None:
                 # No output = defer to default behavior
                 pass
             else:
-                hook_output("ask", reason, event)
+                hook_output("ask", reason)
         else:
             updated_permissions = result.get("updatedPermissions")
-            hook_output(decision, reason, event, updated_permissions, updated_input)
+            hook_output(decision, reason, updated_permissions=updated_permissions, updated_input=updated_input)
     # No result at all: exit silently so Claude decides locally
 
 

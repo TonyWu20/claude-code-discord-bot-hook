@@ -3,7 +3,7 @@
   "transcript_path": "/Users/user/.claude/projects/my-project/uio321pl-k654-7890-1234-567890123456.jsonl",
   "cwd": "/Users/user/projects/my-project",
   "permission_mode": "default",
-  "hook_event_name": "PreToolUse",
+  "hook_event_name": "PermissionRequest",
   "tool_name": "ExitPlanMode",
   "tool_input": {
     "allowedPrompts": [
