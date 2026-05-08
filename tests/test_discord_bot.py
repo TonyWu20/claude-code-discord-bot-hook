@@ -2,7 +2,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import discord
 import pytest
@@ -324,3 +324,128 @@ def test_summarize_usage_skips_wrong_date(tmp_path, monkeypatch):
 
     result = discord_bot.summarize_usage("2026-04-28")
     assert result["projects"] == []
+
+
+# ── sync state ─────────────────────────────────────────────────────────────────
+
+
+def test_sync_state_load_save(tmp_path, monkeypatch):
+    monkeypatch.setattr(discord_bot, "SYNC_STATE_FILE", tmp_path / "sync.json")
+    state = {"sess-a": {"synced": True, "tmux_target": "main:0.1", "forum_thread_id": 123}}
+    discord_bot._save_sync_state(state)
+    assert discord_bot._load_sync_state() == state
+
+
+def test_sync_state_load_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(discord_bot, "SYNC_STATE_FILE", tmp_path / "nonexistent.json")
+    assert discord_bot._load_sync_state() == {}
+
+
+# ── send_keys_to_tmux ──────────────────────────────────────────────────────────
+
+
+def test_send_keys_to_tmux_success(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr("discord_bot.subprocess.run", mock_run)
+    assert discord_bot.send_keys_to_tmux("main:0.1", "hello") is True
+    args = mock_run.call_args[0][0]
+    assert args == ["tmux", "send-keys", "-t", "main:0.1", "hello", "Enter"]
+
+
+def test_send_keys_to_tmux_multiline(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=0))
+    monkeypatch.setattr("discord_bot.subprocess.run", mock_run)
+    assert discord_bot.send_keys_to_tmux("main:0.1", "line1\nline2") is True
+    args = mock_run.call_args[0][0]
+    assert args == ["tmux", "send-keys", "-t", "main:0.1", "line1", "C-j", "line2", "Enter"]
+
+
+def test_send_keys_to_tmux_failure(monkeypatch):
+    mock_run = MagicMock(return_value=MagicMock(returncode=1))
+    monkeypatch.setattr("discord_bot.subprocess.run", mock_run)
+    assert discord_bot.send_keys_to_tmux("main:0.1", "hello") is False
+
+
+def test_send_keys_to_tmux_exception(monkeypatch):
+    mock_run = MagicMock(side_effect=FileNotFoundError("tmux not found"))
+    monkeypatch.setattr("discord_bot.subprocess.run", mock_run)
+    assert discord_bot.send_keys_to_tmux("main:0.1", "hello") is False
+
+
+# ── thread cache migration ─────────────────────────────────────────────────────
+
+
+def test_thread_cache_keyed_by_session_id(tmp_path, monkeypatch):
+    """After saving with a session_id key, load returns the same."""
+    monkeypatch.setattr(discord_bot, "THREAD_CACHE_FILE", tmp_path / "threads.json")
+    discord_bot._save_thread_id("sid-full-uuid", 42)
+    assert discord_bot._load_thread_ids() == {"sid-full-uuid": 42}
+
+
+def test_thread_cache_migration(tmp_path, monkeypatch):
+    """Old label-keyed entries are auto-migrated to session_id keys on load."""
+    cache = tmp_path / "threads.json"
+    cache.write_text(json.dumps({"Tonys-Mac-mini-M4-my-session": 123}))
+    monkeypatch.setattr(discord_bot, "THREAD_CACHE_FILE", cache)
+    monkeypatch.setattr(discord_bot, "SESSIONS_DIR", tmp_path / "sessions")
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    # Create a session file with matching label
+    ss = sessions_dir / "99999.json"
+    ss.write_text(json.dumps({
+        "sessionId": "my-real-uuid-12345",
+        "name": "my-session",
+    }))
+    ids = discord_bot._load_thread_ids()
+    assert "my-real-uuid-12345" in ids
+    assert ids["my-real-uuid-12345"] == 123
+    # Cache file should have been rewritten with session_id key
+    rewritten = json.loads(cache.read_text())
+    assert "my-real-uuid-12345" in rewritten
+
+
+# ── _resolve_session ───────────────────────────────────────────────────────────
+
+
+def test_resolve_session_by_name(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    ss = sessions_dir / "111.json"
+    ss.write_text(json.dumps({"sessionId": "abc-123", "name": "my-session", "cwd": "/project"}))
+    monkeypatch.setattr(discord_bot, "SESSIONS_DIR", sessions_dir)
+    result = discord_bot._resolve_session("my-session")
+    assert result is not None
+    assert result["sessionId"] == "abc-123"
+
+
+def test_resolve_session_by_id_prefix(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    ss = sessions_dir / "222.json"
+    ss.write_text(json.dumps({"sessionId": "abc-123", "name": "other-name", "cwd": "/proj"}))
+    monkeypatch.setattr(discord_bot, "SESSIONS_DIR", sessions_dir)
+    result = discord_bot._resolve_session("abc-")
+    assert result is not None
+    assert result["sessionId"] == "abc-123"
+
+
+def test_resolve_session_not_found(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    monkeypatch.setattr(discord_bot, "SESSIONS_DIR", sessions_dir)
+    assert discord_bot._resolve_session("nonexistent") is None
+
+
+# ── _resolve_sync_label ────────────────────────────────────────────────────────
+
+
+def test_resolve_sync_label_with_name(monkeypatch):
+    monkeypatch.setattr("discord_bot.socket.gethostname", lambda: "myhost.local")
+    session = {"sessionId": "abc-123", "name": "dft-work"}
+    assert discord_bot._resolve_sync_label(session) == "myhost-dft-work"
+
+
+def test_resolve_sync_label_fallback_to_sid(monkeypatch):
+    monkeypatch.setattr("discord_bot.socket.gethostname", lambda: "myhost.local")
+    session = {"sessionId": "abc-123"}
+    assert discord_bot._resolve_sync_label(session) == "myhost-abc-123"

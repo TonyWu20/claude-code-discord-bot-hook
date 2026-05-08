@@ -7,8 +7,9 @@ commands to inspect active sessions and conversation history.
 ## Highlights
 
 - **No Claude subscription required** — runs entirely on Claude Code's hook system; all you need is a Discord bot token.
-- **Not a full Discord-based Claude replacement** — this is a read-only monitor and permission handler. Sending user prompts back to a session would require injecting into the CLI, which is intentionally out of scope.
+- **Not a full Discord-based Claude replacement** — this is a remote monitor and permission handler with bidirectional sync support. Use the `/sync` command to forward prompts from a forum thread to your running Claude Code session via tmux, and receive responses back in the thread.
 - **Remote session monitoring** — approve or deny permission requests from your phone while away from your computer. Requests time out after 120 seconds with graceful fallback.
+- **Session sync** — `/sync` mirrors a Claude Code session's conversation to a Discord forum post. Type in the forum thread to send prompts back to the running session, with responses posted back as replies.
 - **`AskUserQuestion` support** — Claude's multi-choice questions appear as Discord Select menus; an "Answer with text" button opens a Modal for free-text responses.
 - **`ExitPlanMode` support** — plan approval requests show the full plan content in Discord with Approve, Reject, and Give Feedback buttons. "Give Feedback" opens a Modal so you can type revision instructions directly.
 - **History view with tail** — the `/history` slash command supports an optional `tail` parameter to see only the latest updates from your session, rendered in a Discord thread.
@@ -53,10 +54,12 @@ and exposes slash commands for session inspection.
 
 ## Slash Commands
 
-| Command             | Channel          | Description                                      |
-| ------------------- | ---------------- | ------------------------------------------------ |
-| `/sessions`         | Inspect channel  | List active/recent Claude Code sessions          |
-| `/history [session]`| Inspect channel  | Show conversation history for a session in a thread |
+| Command                | Channel          | Description                                      |
+| ---------------------- | ---------------- | ------------------------------------------------ |
+| `/sessions`            | Inspect channel  | List active/recent Claude Code sessions          |
+| `/history [session]`   | Inspect channel  | Show conversation history for a session in a thread |
+| `/summary [date]`      | Summary channel  | Post daily project usage (tokens, models, duration) |
+| `/sync [session]`      | Inspect channel  | Sync a session to a forum thread for bidirectional control |
 
 `session` can be a numeric index (default `0`) or a `sessionId` prefix.
 

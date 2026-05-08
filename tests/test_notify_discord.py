@@ -210,3 +210,42 @@ def test_split_text_underline_inside_fence():
             prefix = part[:idx]
             assert notify_discord._in_fence(prefix), \
                 f"x86_64-linux outside fence in part {i}"
+
+
+# ── IPC enrichment tests ──────────────────────────────────────────────────────
+
+
+def test_ipc_notify_parts_includes_session_id(monkeypatch):
+    """Notify messages should include session_id when provided."""
+    calls = []
+    def fake_ipc(req, timeout=None):
+        calls.append(req)
+        return None
+    monkeypatch.setattr(notify_discord, "ipc", fake_ipc)
+    notify_discord.ipc_notify_parts(["msg1"], "sess-label", "abc-123")
+    assert calls[0].get("session_id") == "abc-123"
+    assert calls[0].get("session") == "sess-label"
+    assert calls[0].get("type") == "notify"
+
+
+def test_ipc_notify_parts_includes_tmux_target(monkeypatch):
+    """Notify messages should include tmux_target when provided."""
+    calls = []
+    def fake_ipc(req, timeout=None):
+        calls.append(req)
+        return None
+    monkeypatch.setattr(notify_discord, "ipc", fake_ipc)
+    notify_discord.ipc_notify_parts(["msg1"], "sess-label", tmux_target="main:0.1")
+    assert calls[0].get("tmux_target") == "main:0.1"
+
+
+def test_ipc_notify_parts_no_extra_when_empty(monkeypatch):
+    """Notify messages should not include empty session_id or tmux_target."""
+    calls = []
+    def fake_ipc(req, timeout=None):
+        calls.append(req)
+        return None
+    monkeypatch.setattr(notify_discord, "ipc", fake_ipc)
+    notify_discord.ipc_notify_parts(["msg1"], "sess-label")
+    assert "session_id" not in calls[0]
+    assert "tmux_target" not in calls[0]

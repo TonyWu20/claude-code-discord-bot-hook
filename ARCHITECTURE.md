@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects the `HEAD` at **0.9.0** (2026-05-08).
+> **Version guard**: This document reflects the `HEAD` at **0.10.1** (2026-05-08).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.
@@ -9,12 +9,13 @@ This document describes the architecture of `claude-code-discord-bot-hook`, a Cl
 
 ## Project Overview
 
-This is a **read-only monitor and remote permission handler** for Claude Code. When Claude Code fires hook events during a session, the plugin sends rich interactive messages to a Discord channel. A user can approve or deny Claude's actions (e.g., running a bash command, writing a file) from Discord — without being at the computer.
+This is a **bidirectional monitor and remote control handler** for Claude Code. When Claude Code fires hook events during a session, the plugin sends rich interactive messages to a Discord channel. A user can approve or deny Claude's actions (e.g., running a bash command, writing a file) from Discord — without being at the computer. Additionally, the user can sync a session's conversation to a forum post and send prompts back into the running tmux session from Discord.
 
 Notable characteristics:
 
-- **Not a Discord chatbot** — it doesn't converse. It surfaces Claude Code's state and decisions.
-- **Read-only monitor** by default; writes only happen through explicit button interactions (approve/deny).
+- **Bidirectional** — not just monitoring. The `/sync` command mirrors conversation to a forum post and forwards typed replies to the tmux pane via `tmux send-keys`.
+- **PID-based tmux discovery** — the bot finds the correct tmux pane by walking the process ancestor tree via `ps -o ppid=`, not by checking which pane is focused. Works correctly when the user has multiple panes and walks away without focusing the Claude Code pane.
+- **Session rename-safe** — thread cache is keyed by immutable `session_id`, not mutable session label. Session thread names are updated in-place when the user renames a session.
 - **Two-process design**: a short-lived shim per hook event, and a long-lived bot for the Discord WebSocket connection.
 - **Distributed** as a [Claude Code marketplace plugin](https://github.com/TonyWu20/my-claude-marketplace).
 
@@ -64,6 +65,8 @@ Key responsibilities:
   - `Bash` shows the command in a code block, with chunking for long commands.
 - **Idle watchdog**: When `--idle-from-stdin` is passed (via `UserPromptSubmit` hook), spawns a detached child that posts "Claude is waiting for input" after 5 minutes of inactivity.
 - **Stop flag**: Checks `/tmp/claude_stop_<session>.txt` before processing approvals — allows external cancellation.
+- **Tmux pane discovery**: Calls `discover_tmux_target(os.getppid())` on every hook invocation and passes `tmux_target` in all IPC messages. Walks the process tree via `ps -o ppid=` — always available on macOS/Linux, no third-party package needed. The bot caches this in sync state for later use by `send-keys`.
+- **IPC enrichment**: All IPC messages carry `session_id` (stable key for thread cache) and `tmux_target` (for tmux pane targeting), both optional for backward compatibility with unmodified bots.
 
 ### `discord_bot.py` — Persistent Discord Bot
 
@@ -78,8 +81,13 @@ Key responsibilities:
   - `/sessions` — lists recent Claude Code sessions.
   - `/history [session] [tail]` — shows recent conversation messages from a session's JSONL file, formatted in a thread.
   - `/summary [date]` — aggregates per-project token usage, model breakdown, and session time for a given UTC date; posts the report as a new forum post.
+  - `/sync [session]` — sync a session to a Discord forum post for away-from-desk control. Supports Select menu for multi-pane environments.
 - **Button/modal interactions**: Handles `approve`, `deny`, `suggest` (permission edits), `askq` (question answering), `plan_feedback` (ExitPlanMode rejection), and `edit_rule` (rule editing before approval).
-- **Session threads**: Creates one Discord thread per Claude Code session, persisted to `/tmp/claude_discord_threads.json`.
+- **Session threads**: Creates one Discord thread per Claude Code session, persisted to `/tmp/claude_discord_threads.json`. Keyed by immutable `session_id` — thread names update in-place on session rename.
+- **Sync state**: Persists session sync state (forum thread ID, tmux target, sync position) to `/tmp/claude_discord_sync.json`.
+- **Tmux pane discovery**: Via `discover_tmux_target_for_session()` — walks the process ancestor tree via `ps -o ppid=` and matches against `tmux list-panes -F '#{pane_pid}'`. Returns a tmux target like `"0:1.1"` for `tmux send-keys`.
+- **Message forwarding**: `on_message` event handler detects user messages in synced forum threads and forwards them to the tmux pane via `tmux send-keys -t <target> <text> Enter`. Newlines in messages become `C-j` (literal line breaks in the TUI) so multiline text submits as a single prompt. If the cached `tmux_target` is empty, it attempts on-demand discovery via `discover_tmux_target_for_session()` before giving up.
+- **Submission confirmation**: After forwarding, `_confirm_message_submitted()` polls the session's JSONL conversation file for growth. Adds ✅ reaction only when Claude has processed the message. Retries Enter up to 4 times if the file doesn't grow, with ⚠️ fallback if all retries fail.
 
 ## Data Flow
 
@@ -118,6 +126,69 @@ User submits prompt → UserPromptSubmit hook fires
    └─ detached child: sleep 300s → ipc({"type": "notify", "idle": true}) → exits
 ```
 
+### Sync Flow (bidirectional control)
+
+```
+┌─ User types prompt in forum thread
+│
+│  discord_bot.py (on_message)
+│   │  detects message in synced forum thread
+│   │  looks up tmux_target from _session_sync
+│   │  if empty: calls discover_tmux_target_for_session() as fallback
+│   ▼
+│  subprocess.run(["tmux", "send-keys", "-t", "0:1.1", "prompt", "Enter"])
+│        │  (newlines → C-j for literal line breaks in TUI)
+│        ▼
+│  _confirm_message_submitted()        ← background async task
+│   │  polls session JSONL file for growth
+│   │  retries Enter up to 4× if file doesn't grow
+│   │  adds ✅ only on confirmation
+│   ▼
+│  Claude Code in tmux pane receives input, processes it
+│        │
+│  Stop event fires → notify_discord.py
+│        │  ipc({"type": "notify", "text": "**Claude:**\n...", "session_id": ..., "tmux_target": ...})
+│        ▼
+│  discord_bot.py handle_ipc_client
+│   │  1. Posts Stop message to session thread (existing)
+│   │  2. If session is synced: reads new JSONL messages since last_synced_line
+│   │  3. Posts them as replies in the forum thread
+│   │  4. On session end: posts "Session ended. Sync disabled." to forum thread
+│   ▼
+│  Bot adds ✅ on user's prompt message (via confirmer)
+└─
+```
+
+### Session Thread Rename Flow
+
+When the user runs `/rename new-name` in a running Claude Code session:
+
+```
+Claude Code writes updated name to ~/.claude/sessions/<pid>.json
+Next hook event fires → notify_discord.py resolves new label
+→ IPC message carries new session_label + same session_id
+→ get_or_create_session_thread(session_id, new_label)
+  → finds thread by session_id (stable key)
+  → detects thread.name != "Session new-label"
+  → calls thread.edit(name="Session new-label")
+```
+
+### `/sync` Command
+
+| Invocation | Behavior |
+|---|---|
+| `/sync` | Select menu of active (PID-alive) sessions → picks one → starts sync |
+| `/sync off` | Select menu of currently-synced sessions → picks one → stops sync |
+| `/sync <name>` | Direct ON by session name, sessionId prefix, or hostname-prefixed label |
+| `/sync <name> off` | Direct OFF |
+
+When sync is ON:
+1. Creates forum post named `"Sync: {hostname}-{session_label}"` in `DISCORD_SYNC_CHANNEL_ID`
+2. Dumps full conversation history into the initial post
+3. Stores sync state (forum thread ID, tmux target, last synced line) to `/tmp/claude_discord_sync.json`
+4. On each Stop event: posts new messages as replies in the forum thread
+5. On session end: posts "Session ended. Sync disabled." and auto-disables sync
+
 ## Configuration
 
 All configuration is via environment variables:
@@ -128,6 +199,7 @@ All configuration is via environment variables:
 | `DISCORD_CHANNEL_ID` | Yes | — | Channel for approval messages and threads |
 | `DISCORD_INSPECT_CHANNEL_ID` | No | `DISCORD_CHANNEL_ID` | Channel for `/sessions`, `/history`, and `/summary` commands |
 | `DISCORD_SUMMARY_CHANNEL_ID` | No | `DISCORD_INSPECT_CHANNEL_ID` | Forum channel where `/summary` posts reports |
+| `DISCORD_SYNC_CHANNEL_ID` | No | `DISCORD_SUMMARY_CHANNEL_ID` | Forum channel where `/sync` creates session sync threads |
 | `DISCORD_NOTIFY_USER_IDS` | No | — | Comma-separated user IDs auto-added to threads |
 | `DISCORD_APPROVAL_TIMEOUT` | No | 120s | Timeout for normal approval decisions |
 | `DISCORD_PLAN_APPROVAL_TIMEOUT` | No | 1800s | Timeout for ExitPlanMode plan feedback |
@@ -139,9 +211,12 @@ All configuration is via environment variables:
 | Path | Purpose |
 |---|---|
 | `/tmp/claude_discord.sock` | Unix socket for shim↔bot IPC |
+| `/tmp/claude_discord.lock` | `fcntl.flock` lock file preventing duplicate bot instances |
 | `/tmp/claude_discord_bot.pid` | Bot process PID |
 | `/tmp/claude_discord_bot.ready` | Signal that bot is connected and listening |
-| `/tmp/claude_discord_threads.json` | Persisted session→thread mapping |
+| `/tmp/claude_discord_threads.json` | Persisted session→thread mapping (session_id keys) |
+| `/tmp/claude_discord_tmux.json` | Cache of session_label→tmux_target for pane discovery |
+| `/tmp/claude_discord_sync.json` | Persisted sync state (forum thread IDs, tmux targets) |
 | `/tmp/claude_stop_<session>.txt` | External stop flag |
 | `/tmp/claude_watchdog.pid` | Idle watchdog PID |
 | `~/.claude/discord-decisions/` | Decision files (written by bot, read/polled by shim) |
@@ -160,8 +235,8 @@ cd hooks && uv run pytest ../tests/ -v
 python hooks/tests/simulate.py --dry-run hooks/tests/fixtures/permission_request_bash.json
 ```
 
-- `tests/test_discord_bot.py` — 18 tests covering thread cache, IPC, interaction handling, and usage summary.
-- `tests/test_notify_discord.py` — 9 tests covering output formatting, bot lifecycle, and IPC.
+- `tests/test_discord_bot.py` — 28 tests covering thread cache, IPC, interaction handling, usage summary, sync state, tmux send-keys (single and multiline), session resolution, thread cache migration.
+- `tests/test_notify_discord.py` — 26 tests covering output formatting, bot lifecycle, IPC, IPC enrichment, text splitting, and fence handling.
 - `hooks/tests/simulate.py` — manual CLI harness that pipes fixtures through the real hook logic.
 
 ## Dependencies

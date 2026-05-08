@@ -29,6 +29,7 @@ BOT_SCRIPT = str(Path(__file__).parent / "discord_bot.py")
 
 DISCORD_BOT_HOST = os.environ.get("DISCORD_BOT_HOST", "")
 DISCORD_BOT_REMOTE = os.environ.get("DISCORD_BOT_REMOTE", "")
+TMUX_CACHE_FILE = Path("/tmp/claude_discord_tmux.json")
 
 
 def ensure_bot_running() -> None:
@@ -97,10 +98,17 @@ def ipc(req: dict, timeout: int | None = None) -> Optional[dict]:
         return None
 
 
-def ipc_notify_parts(parts: list[str], session: str) -> None:
+def ipc_notify_parts(
+    parts: list[str], session: str, session_id: str = "", tmux_target: str | None = None,
+) -> None:
     """Send multiple text parts as sequential notify messages."""
     for part in parts:
-        ipc({"type": "notify", "text": part, "session": session})
+        payload: dict[str, object] = {"type": "notify", "text": part, "session": session}
+        if session_id:
+            payload["session_id"] = session_id
+        if tmux_target:
+            payload["tmux_target"] = tmux_target
+        ipc(payload)
 
 
 def hook_output(
@@ -162,6 +170,69 @@ def resolve_session_label(session_id: str) -> str:
     except OSError:
         pass
     return f"{host}-{session_id[:8]}"
+
+
+def discover_tmux_target(claude_pid: int) -> Optional[str]:
+    """Find the tmux pane target (e.g. '0:1.1') for a given PID.
+
+    Walks the process ancestor tree via `ps` and matches against all
+    tmux pane PIDs. PID-based, not focus-based — correct even when the
+    target pane is not focused.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{session_name}:#{window_index}.#{pane_index}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        panes: list[tuple[int, str]] = []
+        for line in result.stdout.strip().split("\n"):
+            if " " in line:
+                ppid_str, target = line.split(" ", 1)
+                try:
+                    panes.append((int(ppid_str), target.strip()))
+                except ValueError:
+                    continue
+        # Walk ancestor tree of claude_pid using `ps` (no psutil needed)
+        ancestors = {claude_pid}
+        current = claude_pid
+        visited = {claude_pid}
+        for _ in range(50):
+            out = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(current)],
+                capture_output=True, text=True, timeout=3,
+            )
+            if out.returncode != 0 or not out.stdout.strip():
+                break
+            ppid_str = out.stdout.strip()
+            try:
+                ppid = int(ppid_str)
+            except ValueError:
+                break
+            if ppid <= 0 or ppid in visited:
+                break
+            visited.add(ppid)
+            ancestors.add(ppid)
+            current = ppid
+        for pane_pid, target in panes:
+            if pane_pid in ancestors:
+                return target
+        return None
+    except Exception:
+        return None
+
+
+def _cache_tmux_target(session_label: str, target: str | None) -> None:
+    try:
+        cache = json.loads(TMUX_CACHE_FILE.read_text()) if TMUX_CACHE_FILE.exists() else {}
+        if target:
+            cache[session_label] = target
+        else:
+            cache.pop(session_label, None)
+        TMUX_CACHE_FILE.write_text(json.dumps(cache))
+    except OSError:
+        pass
 
 
 def _in_fence(text: str) -> bool:
@@ -269,10 +340,11 @@ def main() -> None:
             label = resolve_session_label(session_id)
         except Exception:
             label = "unknown"
+            session_id = ""
         import subprocess
 
         proc = subprocess.Popen(
-            [sys.executable, __file__, "--idle", label],
+            [sys.executable, __file__, "--idle", label, "--session-id", session_id],
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -284,15 +356,20 @@ def main() -> None:
     if "--idle" in sys.argv:
         idx = sys.argv.index("--idle")
         session_label = sys.argv[idx + 1] if len(sys.argv) > idx + 1 else "unknown"
+        session_id = ""
+        if "--session-id" in sys.argv:
+            sidx = sys.argv.index("--session-id")
+            session_id = sys.argv[sidx + 1] if len(sys.argv) > sidx + 1 else ""
         time.sleep(300)
         ensure_bot_running()
-        ipc(
-            {
-                "type": "notify",
-                "text": f"**Claude is waiting for input** (5 min idle)\nSession: `{session_label}`",
-                "session": session_label,
-            }
-        )
+        payload: dict[str, object] = {
+            "type": "notify",
+            "text": f"**Claude is waiting for input** (5 min idle)\nSession: `{session_label}`",
+            "session": session_label,
+        }
+        if session_id:
+            payload["session_id"] = session_id
+        ipc(payload)
         sys.exit(0)
 
     raw = sys.stdin.read()
@@ -305,13 +382,17 @@ def main() -> None:
     session_id = data.get("session_id", "")
     session_label = resolve_session_label(session_id)
 
+    # Discover tmux target and cache it
+    tmux_target = discover_tmux_target(os.getppid())
+    _cache_tmux_target(session_label, tmux_target)
+
     ensure_bot_running()
 
     if event == "Stop":
         last_text = data.get("last_assistant_message", "")
         if last_text:
             parts = split_text(f"**Claude:**\n{last_text}")
-            ipc_notify_parts(parts, session_label)
+            ipc_notify_parts(parts, session_label, session_id, tmux_target)
         sys.exit(0)
 
     if event == "SubagentStop":
@@ -319,7 +400,7 @@ def main() -> None:
         agent_type = data.get("agent_type", "subagent")
         if last_text:
             parts = split_text(f"**Claude [{agent_type}]:**\n{last_text}")
-            ipc_notify_parts(parts, session_label)
+            ipc_notify_parts(parts, session_label, session_id, tmux_target)
         sys.exit(0)
 
     if event not in ("PreToolUse", "PermissionRequest"):
@@ -373,7 +454,7 @@ def main() -> None:
             # Send overflow chunks as plain notify messages
             first_msg = f"{header}{plan_chunks[0]}"
             for chunk in plan_chunks[1:]:
-                ipc({"type": "notify", "text": first_msg, "session": session_label})
+                ipc({"type": "notify", "text": first_msg, "session": session_label, "session_id": session_id, "tmux_target": tmux_target or ""})
                 first_msg = chunk
             # Send the final chunk with buttons as the blocking approve message
             last = f"{first_msg}\n{footer}\nID: `{request_id}`"
@@ -386,7 +467,8 @@ def main() -> None:
                 "request_id": request_id,
                 "text": last,
                 "session": session_label,
-                "permission_suggestions": [],
+                "session_id": session_id,
+                "tmux_target": tmux_target or "",
                 "tool_name": tool,
                 "tool_input": tool_input,
             },
@@ -407,7 +489,7 @@ def main() -> None:
             cmd_chunks = split_text(cmd, limit=1700)
             first_msg = f"{bash_header}```\n{cmd_chunks[0]}\n```"
             for chunk in cmd_chunks[1:]:
-                ipc({"type": "notify", "text": first_msg, "session": session_label})
+                ipc({"type": "notify", "text": first_msg, "session": session_label, "session_id": session_id, "tmux_target": tmux_target or ""})
                 first_msg = f"```\n{chunk}\n```"
             msg_text = first_msg + f"\nSession: `{session_label}`"
         else:
@@ -436,6 +518,8 @@ def main() -> None:
                 "request_id": request_id,
                 "text": msg_text,
                 "session": session_label,
+                "session_id": session_id,
+                "tmux_target": tmux_target or "",
                 "permission_suggestions": [],
                 "tool_name": tool,
                 "tool_input": tool_input,
@@ -493,6 +577,8 @@ def main() -> None:
             "request_id": request_id,
             "text": msg_text,
             "session": session_label,
+            "session_id": session_id,
+            "tmux_target": tmux_target or "",
             "permission_suggestions": suggestions,
             "tool_name": tool,
             "tool_input": tool_input,

@@ -12,6 +12,7 @@ Required env vars:
   DISCORD_CHANNEL_ID        — approvals channel
   DISCORD_INSPECT_CHANNEL_ID — inspection channel (falls back to DISCORD_CHANNEL_ID)
   DISCORD_SUMMARY_CHANNEL_ID — forum channel for summaries (falls back to INSPECT_CHANNEL_ID)
+  DISCORD_SYNC_CHANNEL_ID   — forum channel for session sync threads (falls back to SUMMARY_CHANNEL_ID)
   DISCORD_NOTIFY_USER_IDS   — comma-separated user IDs to auto-add to session threads (optional)
 
 The bot handles Approve/Deny button interactions from notify_discord.py
@@ -21,6 +22,8 @@ by writing decision files to ~/.claude/discord-decisions/.
 import asyncio
 import json
 import os
+import socket
+import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
@@ -33,7 +36,8 @@ BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 CHANNEL_ID = int(os.environ["DISCORD_CHANNEL_ID"])
 INSPECT_CHANNEL_ID = int(os.environ.get("DISCORD_INSPECT_CHANNEL_ID", CHANNEL_ID))
 SUMMARY_CHANNEL_ID = int(os.environ.get("DISCORD_SUMMARY_CHANNEL_ID", INSPECT_CHANNEL_ID))
-APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "120"))
+SYNC_CHANNEL_ID = int(os.environ.get("DISCORD_SYNC_CHANNEL_ID", SUMMARY_CHANNEL_ID))
+APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_APPROVAL_TIMEOUT", "300"))
 PLAN_APPROVAL_TIMEOUT = int(os.environ.get("DISCORD_PLAN_APPROVAL_TIMEOUT", "1800"))
 _NOTIFY_USER_IDS: list[int] = [
     int(uid.strip())
@@ -51,14 +55,18 @@ HISTORY_FILE = Path.home() / ".claude" / "history.jsonl"
 DECISION_DIR = Path.home() / ".claude" / "discord-decisions"
 DECISION_DIR.mkdir(exist_ok=True)
 THREAD_CACHE_FILE = Path("/tmp/claude_discord_threads.json")
+TMUX_CACHE_FILE = Path("/tmp/claude_discord_tmux.json")
+SYNC_STATE_FILE = Path("/tmp/claude_discord_sync.json")
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# session_label -> discord.Thread (in-memory cache)
+# session_id -> discord.Thread (in-memory cache, stable key)
 _session_threads: dict[str, discord.Thread] = {}
+# session_label -> sync state (in-memory cache)
+_session_sync: dict[str, dict] = {}
 # request_id -> list of permission_suggestions entries
 _pending_suggestions: dict[str, list] = {}
 # request_id -> tool_input (for ExitPlanMode, echoed back as updatedInput)
@@ -67,16 +75,49 @@ _pending_tool_input: dict[str, dict] = {}
 _pending_questions: dict[str, dict] = {}
 
 
+def _build_label_to_session_id_map() -> dict[str, str]:
+    """Build {label_or_short_id: session_id} from session JSON files for cache migration."""
+    host = socket.gethostname().split(".")[0]
+    mapping: dict[str, str] = {}
+    for f in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+            sid = data.get("sessionId", "")
+            name = data.get("name", "")
+            if sid:
+                mapping[f"{host}-{name or sid[:8]}"] = sid
+                mapping[sid[:8]] = sid
+        except (json.JSONDecodeError, OSError):
+            continue
+    return mapping
+
+
 def _load_thread_ids() -> dict[str, int]:
     try:
-        return json.loads(THREAD_CACHE_FILE.read_text())
+        raw = json.loads(THREAD_CACHE_FILE.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+    # Migration: remap old label-keyed entries to session_id keys
+    label_map = _build_label_to_session_id_map()
+    needs_migration = False
+    migrated: dict[str, int] = {}
+    for key, thread_id in raw.items():
+        if key in label_map:
+            migrated[label_map[key]] = thread_id
+            needs_migration = True
+        else:
+            migrated[key] = thread_id
+    if needs_migration:
+        try:
+            THREAD_CACHE_FILE.write_text(json.dumps(migrated))
+        except OSError:
+            pass
+    return migrated
 
 
-def _save_thread_id(session: str, thread_id: int) -> None:
+def _save_thread_id(session_id: str, thread_id: int) -> None:
     ids = _load_thread_ids()
-    ids[session] = thread_id
+    ids[session_id] = thread_id
     THREAD_CACHE_FILE.write_text(json.dumps(ids))
 
 
@@ -86,6 +127,23 @@ async def _add_notify_users(thread: discord.Thread) -> None:
             await thread.add_user(discord.Object(id=uid))
         except discord.HTTPException as e:
             print(f"[warn] Failed to add user {uid} to thread {thread.id}: {e}")
+
+
+# ── sync state ─────────────────────────────────────────────────────────────────
+
+
+def _load_sync_state() -> dict[str, dict]:
+    try:
+        return json.loads(SYNC_STATE_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_sync_state(state: dict) -> None:
+    try:
+        SYNC_STATE_FILE.write_text(json.dumps(state, indent=2))
+    except OSError:
+        pass
 
 
 # ── session helpers ────────────────────────────────────────────────────────────
@@ -126,6 +184,74 @@ def find_conversation_file(session_id: str) -> Path | None:
     return None
 
 
+def discover_tmux_target_for_session(session_label: str) -> str | None:
+    """Find tmux pane target for a session, checking cache first then direct discovery.
+
+    Uses `tmux` and `ps` directly instead of psutil for robustness.
+    """
+    # Check cache first
+    try:
+        cache = json.loads(TMUX_CACHE_FILE.read_text()) if TMUX_CACHE_FILE.exists() else {}
+        if session_label in cache:
+            return cache[session_label]
+    except (OSError, json.JSONDecodeError):
+        pass
+    # Walk session JSONs to find the PID for this label
+    host = socket.gethostname().split(".")[0]
+    for f in SESSIONS_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+            sid = data.get("sessionId", "")
+            name = data.get("name", "")
+            expected = f"{host}-{name or sid[:8]}"
+            if expected != session_label:
+                continue
+            pid = int(f.stem)
+            # Run tmux list-panes to get all pane PIDs and targets
+            result = subprocess.run(
+                ["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{session_name}:#{window_index}.#{pane_index}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0 or not result.stdout.strip():
+                continue
+            panes: list[tuple[int, str]] = []
+            for line in result.stdout.strip().split("\n"):
+                if " " in line:
+                    ppid_str, target = line.split(" ", 1)
+                    try:
+                        panes.append((int(ppid_str), target.strip()))
+                    except ValueError:
+                        continue
+            # Walk the ancestor chain using `ps` command (no psutil dependency)
+            ancestors = {pid}
+            current = pid
+            visited = {pid}
+            for _ in range(50):  # safety limit
+                out = subprocess.run(
+                    ["ps", "-o", "ppid=", "-p", str(current)],
+                    capture_output=True, text=True, timeout=3,
+                )
+                if out.returncode != 0 or not out.stdout.strip():
+                    break
+                ppid_str = out.stdout.strip()
+                try:
+                    ppid = int(ppid_str)
+                except ValueError:
+                    break
+                if ppid <= 0 or ppid in visited:
+                    break
+                visited.add(ppid)
+                ancestors.add(ppid)
+                current = ppid
+            for pane_pid, target in panes:
+                if pane_pid in ancestors:
+                    return target
+            return None
+        except Exception:
+            continue
+    return None
+
+
 def extract_messages(jsonl_path: Path) -> list[dict]:
     messages = []
     for line in jsonl_path.read_text().splitlines():
@@ -150,8 +276,8 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                     inp = json.dumps(
                         block.get("input", {}), indent=2, ensure_ascii=False
                     )
-                    if len(inp) > 500:
-                        inp = inp[:500] + "\n…"
+                    if len(inp) > 1500:
+                        inp = inp[:1500] + "\n…"
                     parts.append(f"🔧 **{name}**\n```json\n{_sanitize_fences(inp)}\n```")
                 elif block.get("type") == "tool_result":
                     result = block.get("content", "")
@@ -160,9 +286,15 @@ def extract_messages(jsonl_path: Path) -> list[dict]:
                             b.get("text", "") for b in result if isinstance(b, dict)
                         )
                     result = str(result).strip()
-                    if len(result) > 500:
-                        result = result[:500] + "\n…"
+                    if len(result) > 1500:
+                        result = result[:1500] + "\n…"
                     parts.append(f"📤 **Result**\n```\n{_sanitize_fences(result)}\n```")
+                elif block.get("type") == "thinking":
+                    thinking = block.get("thinking", "")
+                    if thinking:
+                        if len(thinking) > 1500:
+                            thinking = thinking[:1500] + "\n…"
+                        parts.append(f"💭 *{_sanitize_fences(thinking)}*")
             content = "\n".join(parts)
         if not content.strip():
             continue
@@ -503,21 +635,320 @@ async def slash_summary(
         )
 
 
+# ── sync helpers ────────────────────────────────────────────────────────────────
+
+
+def _resolve_session(input_str: str) -> dict | None:
+    """Resolve a session by name, sessionId prefix, or hostname-prefixed label."""
+    sessions = load_sessions()
+    host = socket.gethostname().split(".")[0]
+    for s in sessions:
+        sid = s.get("sessionId", "")
+        name = s.get("name", "")
+        label = f"{host}-{name or sid[:8]}"
+        if name == input_str or sid.startswith(input_str) or label == input_str:
+            return s
+    return None
+
+
+def _resolve_sync_label(session: dict) -> str:
+    """Build the sync label (hostname-prefixed) from a session dict."""
+    host = socket.gethostname().split(".")[0]
+    sid = session.get("sessionId", "")
+    name = session.get("name", "")
+    return f"{host}-{name or sid[:8]}"
+
+
+async def _activate_sync(
+    interaction: discord.Interaction, session: dict,
+) -> None:
+    """Create forum post, dump history, store sync state."""
+    session_label = _resolve_sync_label(session)
+    session_id = session.get("sessionId", "")
+
+    if _session_sync.get(session_label, {}).get("synced"):
+        await interaction.followup.send(
+            f"`{session_label}` is already synced. Use `/sync {session_label} off` first.",
+            ephemeral=True,
+        )
+        return
+
+    # Discover tmux target — check cache, then fallback
+    tmux_target = _session_sync.get(session_label, {}).get("tmux_target", "")
+    if not tmux_target:
+        tmux_target = discover_tmux_target_for_session(session_label) or ""
+
+    # Create forum post
+    channel = bot.get_channel(SYNC_CHANNEL_ID)
+    if not channel:
+        await interaction.followup.send("Sync channel not found. Check DISCORD_SYNC_CHANNEL_ID.", ephemeral=True)
+        return
+
+    # Build initial content from conversation history, paginated
+    conv_file = find_conversation_file(session_id)
+    chunks: list[str] = []
+    last_synced_line = 0
+    if conv_file:
+        messages = extract_messages(conv_file)
+        if messages:
+            last_synced_line = len(messages)
+            for m in messages:
+                msg_text = format_message(m)
+                if not chunks or len(chunks[-1]) + len(msg_text) + 2 > 1900:
+                    chunks.append(msg_text)
+                else:
+                    chunks[-1] += "\n\n" + msg_text
+    if not chunks:
+        chunks = ["**Session sync started — type in this thread to send prompts to Claude.**"]
+
+    # Trim first chunk to fit Discord's 2000-char limit
+    first_content = chunks[0]
+    if len(first_content) > 1900:
+        first_content = first_content[:1900] + "\n…"
+    overflow = chunks[1:] if len(chunks) > 1 else []
+
+    try:
+        created = await channel.create_thread(
+            name=f"Sync: {session_label}",
+            content=first_content,
+        )
+        # Forum channels return ThreadWithMessage (thread, message); regular channels return Thread
+        thread = created.thread if hasattr(created, "thread") else created
+    except (discord.HTTPException, TypeError) as e:
+        await interaction.followup.send(f"Failed to create forum post: {e}", ephemeral=True)
+        return
+
+    # Post remaining chunks as replies
+    for chunk in overflow:
+        try:
+            if len(chunk) > 1950:
+                for i in range(0, len(chunk), 1950):
+                    await thread.send(chunk[i:i+1950])
+            else:
+                await thread.send(chunk)
+        except discord.HTTPException:
+            break
+
+    # Store sync state
+    _session_sync[session_label] = {
+        "synced": True,
+        "tmux_target": tmux_target,
+        "forum_thread_id": thread.id,
+        "forum_channel_id": SYNC_CHANNEL_ID,
+        "last_synced_line": last_synced_line,
+    }
+    _save_sync_state(_session_sync)
+
+    try:
+        for uid in _NOTIFY_USER_IDS:
+            await thread.add_user(discord.Object(id=uid))
+    except discord.HTTPException:
+        pass
+
+    await interaction.followup.send(
+        f"Syncing `{session_label}` → {thread.mention}. Type in that thread to send prompts to Claude.",
+        ephemeral=True,
+    )
+
+
+async def _deactivate_sync(interaction: discord.Interaction, session_label: str) -> None:
+    """Turn off sync for a session."""
+    state = _session_sync.get(session_label)
+    if not state or not state.get("synced"):
+        await interaction.followup.send(
+            f"`{session_label}` is not currently synced.", ephemeral=True,
+        )
+        return
+
+    state["synced"] = False
+    _save_sync_state(_session_sync)
+
+    # Post final message to forum thread
+    try:
+        thread_id = state.get("forum_thread_id")
+        if thread_id:
+            channel = bot.get_channel(state.get("forum_channel_id", 0)) or bot.get_channel(SYNC_CHANNEL_ID)
+            if channel:
+                thread = await bot.fetch_channel(thread_id)
+                await thread.send("**Sync disabled** — this thread will no longer receive updates.")
+    except (discord.HTTPException, discord.NotFound):
+        pass
+
+    await interaction.followup.send(
+        f"Sync disabled for `{session_label}`.", ephemeral=True,
+    )
+
+
+class SyncSessionSelect(discord.ui.View):
+    """Dropdown that starts or stops sync on a session."""
+
+    def __init__(self, sessions: list[dict], is_off: bool = False):
+        super().__init__(timeout=60)
+        self.is_off = is_off
+        host = socket.gethostname().split(".")[0]
+        options = []
+        for s in sessions[:25]:
+            sid = s.get("sessionId", "")
+            name = s.get("name", "") or sid[:8]
+            label = f"{host}-{name}"[:100]
+            cwd = s.get("cwd", "?")
+            options.append(discord.SelectOption(
+                label=label, value=sid, description=cwd[:100],
+            ))
+        if not options:
+            self.select = discord.ui.Select(
+                placeholder="No sessions available",
+                options=[discord.SelectOption(label="None available", value="")],
+                disabled=True,
+            )
+        else:
+            self.select = discord.ui.Select(
+                placeholder="Select a session",
+                options=options,
+            )
+        self.select.callback = self.on_select
+        self.add_item(self.select)
+
+    async def on_select(self, interaction: discord.Interaction):
+        session_id = self.select.values[0]
+        if not session_id:
+            await interaction.response.edit_message(content="No session selected.", view=None)
+            return
+
+        session = _resolve_session(session_id)
+        if not session:
+            await interaction.response.edit_message(
+                content=f"Session `{session_id[:8]}` not found.", view=None,
+            )
+            return
+
+        session_label = _resolve_sync_label(session)
+        await interaction.response.edit_message(
+            content=f"Selected `{session_label}`...", view=None,
+        )
+
+        if self.is_off:
+            await _deactivate_sync(interaction, session_label)
+        else:
+            await _activate_sync(interaction, session)
+
+
+class SyncToggleView(discord.ui.View):
+    """Two-button view: sync on / off for a direct-match session."""
+
+    def __init__(self, session_label: str, session_id: str):
+        super().__init__(timeout=30)
+        self.session_label = session_label
+        self.session_id = session_id
+        self.add_item(discord.ui.Button(
+            label="Sync ON", style=discord.ButtonStyle.success,
+            custom_id=f"sync_on:{session_label}",
+        ))
+        self.add_item(discord.ui.Button(
+            label="Sync OFF", style=discord.ButtonStyle.danger,
+            custom_id=f"sync_off:{session_label}",
+        ))
+
+
+@tree.command(name="sync", description="Sync a session to a forum thread for away-from-desk control")
+@app_commands.describe(
+    session="Session name, sessionId prefix, or type 'off' to list synced sessions",
+)
+async def slash_sync(
+    interaction: discord.Interaction, session: str | None = None,
+):
+    if interaction.channel_id != INSPECT_CHANNEL_ID:
+        await interaction.response.send_message("Use the inspect channel.", ephemeral=True)
+        return
+
+    # /sync off — list synced sessions to pick one to stop
+    if session == "off":
+        synced = [(label, st) for label, st in _session_sync.items() if st.get("synced")]
+        if not synced:
+            await interaction.response.send_message("No sessions are currently synced.", ephemeral=True)
+            return
+        # Build session dicts for SyncSessionSelect
+        sessions = []
+        for label, _ in synced:
+            s = _resolve_session(label)
+            if s:
+                sessions.append(s)
+        if not sessions:
+            await interaction.response.send_message("Could not resolve synced sessions.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "Select a session to stop syncing:", view=SyncSessionSelect(sessions, is_off=True), ephemeral=True,
+        )
+        return
+
+    # /sync <name> — direct match and activate
+    if session:
+        s = _resolve_session(session)
+        if not s:
+            await interaction.response.send_message(
+                f"Session `{session}` not found. Use `/sync` to see active sessions.", ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        await _activate_sync(interaction, s)
+        return
+
+    # /sync (no args) — show Select of active sessions
+    await interaction.response.defer(ephemeral=True)
+    sessions = load_sessions()
+    active = []
+    for s in sessions:
+        pid = s.get("_pid", "")
+        if pid:
+            try:
+                os.kill(int(pid), 0)
+                active.append(s)
+            except (OSError, ValueError):
+                continue
+    if not active:
+        await interaction.followup.send(
+            "No active Claude Code sessions found. Start one in tmux first.", ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        "Select a session to sync away from your desk:",
+        view=SyncSessionSelect(active), ephemeral=True,
+    )
+
+
 # ── session thread helpers ─────────────────────────────────────────────────────
 
 
-async def get_or_create_session_thread(session: str) -> discord.Thread:
-    # Check in-memory cache first
-    if session in _session_threads:
-        return _session_threads[session]
+async def get_or_create_session_thread(
+    session_id: str, session_label: str
+) -> discord.Thread:
+    # Use session_id as the stable cache key
+    if session_id in _session_threads:
+        thread = _session_threads[session_id]
+        # Detect rename: check if thread name matches current label
+        expected_name = f"Session {session_label}"
+        if thread.name != expected_name:
+            try:
+                await thread.edit(name=expected_name)
+            except discord.HTTPException:
+                pass
+        return thread
 
-    # Check persisted thread IDs
+    # Check persisted thread IDs (keyed by session_id after migration)
     thread_ids = _load_thread_ids()
-    if session in thread_ids:
+    if session_id in thread_ids:
         channel = bot.get_channel(CHANNEL_ID)
         try:
-            thread = await bot.fetch_channel(thread_ids[session])
-            _session_threads[session] = thread
+            thread = await bot.fetch_channel(thread_ids[session_id])
+            # Fix name if out of date (e.g. due to rename)
+            expected_name = f"Session {session_label}"
+            if thread.name != expected_name:
+                try:
+                    await thread.edit(name=expected_name)
+                except discord.HTTPException:
+                    pass
+            _session_threads[session_id] = thread
             return thread
         except (discord.NotFound, discord.HTTPException):
             pass
@@ -525,11 +956,11 @@ async def get_or_create_session_thread(session: str) -> discord.Thread:
     # Create new thread
     channel = bot.get_channel(CHANNEL_ID)
     thread = await channel.create_thread(
-        name=f"Session {session}",
+        name=f"Session {session_label}",
         type=discord.ChannelType.public_thread,
     )
-    _session_threads[session] = thread
-    _save_thread_id(session, thread.id)
+    _session_threads[session_id] = thread
+    _save_thread_id(session_id, thread.id)
     await _add_notify_users(thread)
     return thread
 
@@ -569,8 +1000,17 @@ async def handle_ipc_client(
         return
 
     msg_type = req.get("type")
-    session = req.get("session", "unknown")
+    session = req.get("session", "unknown")  # display label
+    session_id = req.get("session_id", "")  # stable key (may be empty in legacy IPC)
+    tmux_target = req.get("tmux_target", "")  # tmux target for this session
     text = req.get("text", "")
+
+    # Store tmux_target in sync state if provided
+    if tmux_target:
+        if session not in _session_sync:
+            _session_sync[session] = {"synced": False}
+        _session_sync[session]["tmux_target"] = tmux_target
+        _save_sync_state(_session_sync)
 
     if bot.get_channel(CHANNEL_ID) is None:
         writer.write(b'{"ok": false, "error": "bot not connected"}\n')
@@ -579,16 +1019,49 @@ async def handle_ipc_client(
         return
 
     if msg_type == "notify":
-        thread = await get_or_create_session_thread(session)
+        thread = await get_or_create_session_thread(session_id or session, session)
         await thread.send(text)
         writer.write(b'{"ok": true}\n')
+
+        # Phase 5: if synced and this is a Stop output, update forum with new messages
+        state = _session_sync.get(session)
+        if state and state.get("synced") and text.startswith("**Claude:**"):
+            forum_thread_id = state.get("forum_thread_id")
+            if forum_thread_id:
+                try:
+                    conv_file = find_conversation_file(session_id)
+                    if conv_file:
+                        messages = extract_messages(conv_file)
+                        new_count = len(messages) - state.get("last_synced_line", 0)
+                        if new_count > 0:
+                            new_msgs = messages[-new_count:]
+                            # Build paginated chunks for the new messages
+                            new_chunks: list[str] = []
+                            for m in new_msgs:
+                                msg_text = format_message(m)
+                                if not new_chunks or len(new_chunks[-1]) + len(msg_text) + 2 > 1900:
+                                    new_chunks.append(msg_text)
+                                else:
+                                    new_chunks[-1] += "\n\n" + msg_text
+                            try:
+                                forum_chan = bot.get_channel(state.get("forum_channel_id", 0))
+                                if forum_chan:
+                                    forum_thread = await bot.fetch_channel(forum_thread_id)
+                                    for chunk in new_chunks:
+                                        await forum_thread.send(chunk)
+                            except (discord.NotFound, discord.HTTPException):
+                                pass
+                            state["last_synced_line"] = len(messages)
+                            _save_sync_state(_session_sync)
+                except Exception:
+                    pass
 
     elif msg_type == "approve":
         request_id = req.get("request_id", "")
         suggestions = req.get("permission_suggestions", [])
         tool_name = req.get("tool_name", "")
         tool_input = req.get("tool_input", {})
-        thread = await get_or_create_session_thread(session)
+        thread = await get_or_create_session_thread(session_id or session, session)
         view = discord.ui.View(timeout=None)
 
         if tool_name == "AskUserQuestion":
@@ -697,6 +1170,22 @@ async def handle_ipc_client(
                 _pending_suggestions[request_id] = suggestions
 
         await thread.send(text, view=view)
+
+        # Forward a notification to the synced forum thread
+        forum_state = _session_sync.get(session)
+        if forum_state and forum_state.get("synced"):
+            ftid = forum_state.get("forum_thread_id")
+            if ftid:
+                forum_text = text
+                if len(forum_text) > 1900:
+                    forum_text = forum_text[:1900] + "\n…"
+                try:
+                    fchan = bot.get_channel(forum_state.get("forum_channel_id", 0))
+                    if fchan:
+                        fthread = await bot.fetch_channel(ftid)
+                        await fthread.send(forum_text)
+                except (discord.NotFound, discord.HTTPException):
+                    pass
 
         # Poll for decision file
         decision_file = DECISION_DIR / f"{request_id}.json"
@@ -959,17 +1448,152 @@ async def cmd_sync(ctx):
     await ctx.send("Slash commands synced.")
 
 
+async def _confirm_message_submitted(
+    session_label: str, tmux_target: str, reply_to: discord.Message,
+) -> None:
+    """Poll the JSONL file until the message appears (Claude processed it),
+    retrying Enter if needed. Adds ✅ reaction only once confirmed."""
+    sess = _resolve_session(session_label)
+    if not sess:
+        print(f"[sync]  confirm: no session for label={session_label}")
+        try:
+            await reply_to.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+        return
+    sid = sess.get("sessionId", "")
+    if not sid:
+        print(f"[sync]  confirm: no sessionId for label={session_label}")
+        try:
+            await reply_to.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+        return
+    conv = find_conversation_file(sid)
+    if not conv:
+        print(f"[sync]  confirm: no conv file for sid={sid[:8]}")
+        try:
+            await reply_to.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+        return
+    initial = len(conv.read_text().splitlines())
+    print(f"[sync]  confirm: watching {conv.name} (initial={initial})")
+    await asyncio.sleep(3)
+    for attempt in range(5):
+        current = len(conv.read_text().splitlines())
+        if current > initial:
+            print(f"[sync]  confirm: submitted (lines {initial}→{current}) ✅")
+            try:
+                await reply_to.add_reaction("✅")
+            except discord.HTTPException:
+                pass
+            return
+        if attempt < 4:
+            print(f"[sync]  confirm: retry Enter {attempt + 1} (still {current} lines)")
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_target, "Enter"], timeout=5,
+            )
+            await asyncio.sleep(2)
+    print(f"[sync]  confirm: gave up after 4 retries ⚠️")
+    try:
+        await reply_to.add_reaction("⚠️")
+    except discord.HTTPException:
+        pass
+
+
 @bot.event
 async def on_message(message):
     print(f"[msg] #{message.channel.id} {message.author}: {message.content!r}")
     await bot.process_commands(message)
 
+    # Phase 6: forward messages from synced forum threads to tmux
+    if message.author == bot.user:
+        return
+    if message.content.startswith("/"):
+        return
+    print(f"[sync] _session_sync keys: {list(_session_sync.keys())}")
+    print(f"[sync] channel.id={message.channel.id}, type={type(message.channel)}")
+    for _label, state in _session_sync.items():
+        ftid = state.get("forum_thread_id")
+        print(f"[sync]  checking label={_label} forum_thread_id={ftid} synced={state.get('synced')}")
+        if state.get("synced") and ftid == message.channel.id:
+            tmux_target = state.get("tmux_target", "")
+            print(f"[sync]  MATCH! tmux_target={tmux_target!r}")
+            if not tmux_target:
+                print(f"[sync]  attempting on-demand discovery for label={_label}")
+                try:
+                    tmux_target = discover_tmux_target_for_session(_label) or ""
+                except Exception as e:
+                    print(f"[sync]  discovery exception: {e}")
+                    tmux_target = ""
+                if tmux_target:
+                    state["tmux_target"] = tmux_target
+                    _save_sync_state(_session_sync)
+                    print(f"[sync]  discovered tmux_target={tmux_target!r} on demand")
+                else:
+                    try:
+                        await message.add_reaction("⚠️")
+                    except discord.HTTPException:
+                        pass
+                    return
+            success = send_keys_to_tmux(tmux_target, message.content)
+            if success:
+                asyncio.create_task(
+                    _confirm_message_submitted(_label, tmux_target, message)
+                )
+            else:
+                await message.reply(
+                    "Failed to send to tmux — session may have ended. Use `/sync off` to stop sync.",
+                    mention_author=True,
+                )
+            break
+    else:
+        print(f"[sync] no match found")
+
+
+def send_keys_to_tmux(target: str, text: str) -> bool:
+    """Inject text into a tmux pane. Returns True on success.
+
+    Newlines are sent as C-j (Ctrl+J) so they become literal line breaks
+    in the TUI input widget rather than submissions. A final Enter
+    submits the complete multiline text as one prompt.
+    """
+    try:
+        args = ["tmux", "send-keys", "-t", target]
+        for i, part in enumerate(text.split("\n")):
+            if i > 0:
+                args.append("C-j")
+            args.append(part)
+        args.append("Enter")
+        result = subprocess.run(args, timeout=5)
+        return result.returncode == 0
+    except Exception:
+        return False
+
 
 @bot.event
 async def on_ready():
+    global _session_sync
     print(f"Discord bot ready as {bot.user}")
+    _session_sync = _load_sync_state()
     asyncio.create_task(run_socket_server())
 
 
 if __name__ == "__main__":
-    bot.run(BOT_TOKEN)
+    # OS-level file lock — atomic across processes, no race.
+    import fcntl
+    lock_path = Path("/tmp/claude_discord.lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, OSError):
+        print("Another bot instance is running. Exiting.")
+        os.close(lock_fd)
+        raise SystemExit(0)
+    # Release lock on exit (flock auto-releases when fd is closed)
+    try:
+        bot.run(BOT_TOKEN)
+    finally:
+        os.close(lock_fd)
+        lock_path.unlink(missing_ok=True)

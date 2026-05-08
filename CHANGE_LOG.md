@@ -1,5 +1,96 @@
 # Change Log
 
+## [0.10.1] 2026-05-08 — Reliable message forwarding, submission confirmation, and single-instance guard
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `ARCHITECTURE.md`, `README.md`, `tests/test_discord_bot.py`, `tests/test_notify_discord.py`
+**Removed:** `psutil` from `hooks/pyproject.toml`
+
+**Why:** The session sync feature in 0.10.0 had several reliability issues. tmux pane discovery silently failed (psutil import error). The Enter key for submission was unreliable from subprocess contexts. Multiple bot instances could run simultaneously. Tool results were truncated at 500 chars and thinking content was invisible.
+
+**What:**
+
+### psutil → `ps` command migration
+- Both `discover_tmux_target_for_session()` and `discover_tmux_target()` now walk the process tree via `subprocess.run(["ps", "-o", "ppid=", ...])` instead of `import psutil`. Eliminates silent import failures in marketplace plugin installs.
+- `psutil` removed from `hooks/pyproject.toml`.
+
+### IPC handler: always update tmux_target
+- `handle_ipc_client` now updates `tmux_target` in `_session_sync` regardless of whether the session is already registered. Previously the guard `if session not in _session_sync` left the target empty for sessions activated via `/sync`.
+
+### on_message: on-demand tmux discovery
+- When the cached `tmux_target` is empty, `on_message` calls `discover_tmux_target_for_session()` as a fallback before giving up with ⚠️.
+
+### Reliable message submission via `subprocess.run`
+- `send_keys_to_tmux` uses `subprocess.run` with a list of arguments (no shell). Newlines in messages are sent as `C-j` (Ctrl+J) which inserts literal line breaks in the TUI input widget. A final `"Enter"` submits the complete multiline text as one prompt.
+
+### Submission confirmation with JSONL polling
+- After sending to tmux, `_confirm_message_submitted()` polls the session's JSONL conversation file for growth. ✅ is added to the Discord message only when Claude has processed it. If the file doesn't grow within 3 seconds, Enter is retried up to 4 more times at 2s intervals. Falls back to ⚠️ if all retries fail.
+
+### Instance lock via fcntl.flock
+- OS-level atomic file lock prevents multiple bot instances from running simultaneously. Lock is acquired before Discord connection and released on exit.
+
+### Thinking content display
+- Assistant messages with `{"type": "thinking"}` blocks are displayed in forum threads with a 💭 prefix.
+
+### Extended tool result display
+- Tool result and input truncation raised from 500 to 1500 characters.
+
+### Permission request forwarding
+- Approval requests are forwarded to the synced forum thread as text notifications (without buttons — approval still happens in the session thread).
+
+### Default approval timeout
+- `DISCORD_APPROVAL_TIMEOUT` default raised from 120s to 300s (5 minutes).
+
+### Tests
+- 54 tests (1 new: multiline send_keys_to_tmux). All pass.
+
+## [0.10.0] 2026-05-08 — Bidirectional Discord control with session sync
+
+**Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `hooks/pyproject.toml`, `ARCHITECTURE.md`, `tests/test_discord_bot.py`, `tests/test_notify_discord.py`
+**New:** `pytest.ini`
+
+**Why:** The bot was a read-only monitor — you could see what Claude was doing and approve/deny actions, but you couldn't see full conversation output or send prompts back into a session from Discord. This made it impossible to continue a session while away from the computer without SSH + tmux on phone.
+
+**What:**
+
+### Session rename regression fix (thread orphan)
+- Thread cache (`/tmp/claude_discord_threads.json`) now keyed by immutable `session_id` instead of mutable session label
+- `get_or_create_session_thread()` takes `(session_id, session_label)` — looks up by session_id, names by label
+- When a session is renamed mid-session, the bot detects the mismatch and calls `thread.edit(name=...)` in-place
+- Old label-keyed cache entries are auto-migrated to session_id keys on bot startup
+
+### `/sync` slash command
+- `/sync` with no args: Select menu of active Claude Code sessions → pick one → starts sync
+- `/sync off`: Select menu of currently-synced sessions → pick one → stops sync
+- `/sync <name>`: Direct ON by session name, sessionId prefix, or hostname-prefixed label
+- `/sync <name> off`: Direct OFF
+
+### Session sync to forum posts
+- `/sync on` creates a forum post in `DISCORD_SYNC_CHANNEL_ID` and dumps full conversation history
+- On each Stop event: new messages (from session JSONL) are posted as replies in the forum thread
+- On session end: "Session ended. Sync disabled." posted to forum, sync auto-disabled
+- Sync state persisted to `/tmp/claude_discord_sync.json`
+
+### tmux pane discovery and prompt injection
+- **PID-based discovery** (not focus-based): `discover_tmux_target()` walks the process ancestor tree via psutil and matches against `tmux list-panes -a -F '#{pane_pid}'` — correct even when the Claude Code pane is not focused
+- Shim-side discovery: `notify_discord.py` calls `discover_tmux_target(os.getppid())` on every hook invocation, passes `tmux_target` in all IPC messages
+- Bot-side discovery: `discord_bot.py` has `discover_tmux_target_for_session()` for the fallback case (user types `/sync on` before any hook event fires)
+- `send_keys_to_tmux()`: runs `tmux send-keys -t <target> <text> Enter`; reacts ✅ on success, ⚠️ or error reply on failure
+
+### Message forwarding from forum → tmux
+- `on_message` handler detects user messages in synced forum threads
+- Forwards them to the running Claude Code tmux pane via `tmux send-keys`
+- Bot's own messages and slash commands are skipped
+
+### IPC enrichment
+- All IPC messages from `notify_discord.py` now carry `session_id` (stable key) and `tmux_target` (for pane targeting)
+- Both are optional — backward compatible with unmodified bots
+
+### Dependency
+- Added `psutil>=5.9` for cross-platform process tree walking (needed for tmux pane discovery on macOS, which has no `/proc`)
+
+### Tests
+- 15 new tests covering: sync state load/save, send_keys_to_tmux success/failure, thread cache keyed by session_id, cache migration from old format, session resolution by name/id, IPC enrichment (session_id, tmux_target in messages)
+
 ## [0.9.0] 2026-05-08 — Hostname prefix in session labels and request IDs
 
 **Changed:** `hooks/notify_discord.py`, `ARCHITECTURE.md`, `README.md`
