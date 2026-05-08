@@ -1,6 +1,6 @@
 # Architecture
 
-> **Version guard**: This document reflects the `HEAD` at **0.11.0** (2026-05-09).
+> **Version guard**: This document reflects the `HEAD` at **2.0.0** (2026-05-09).
 > If the code has moved on, this may be stale. Run `git log ARCHITECTURE.md` to check
 > whether it's been updated for the current HEAD, and update it if you make structural
 > changes.

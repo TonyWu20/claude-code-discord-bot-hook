@@ -1,5 +1,18 @@
 # Change Log
 
+## [2.0.0] 2026-05-09 — Bidirectional sync milestone
+
+**Changed:** `hooks/pyproject.toml`, `CHANGE_LOG.md`, `ARCHITECTURE.md`
+**Marketplace:** `my-claude-marketplace` `v2.0.0`
+
+**Why:** The bidirectional session sync feature (`/sync` command, tmux pane discovery,
+forum-based conversation mirroring, prompt forwarding) landed in 0.10.0 and has been
+stable through 0.10.1 and 0.11.0 refinements. This release marks the major feature
+milestone by aligning the project version with the marketplace version.
+
+**What:**
+- Bump project version to `2.0.0` across all files to match the marketplace manifest.
+
 ## [0.11.0] 2026-05-09 — Conversation context, zero truncation, PreToolUse cleanup
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `tests/test_discord_bot.py`,
