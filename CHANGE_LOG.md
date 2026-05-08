@@ -1,5 +1,15 @@
 # Change Log
 
+## [0.10.2] — Fix multi-question AskUserQuestion answer submission via PermissionRequest
+
+**Changed:** `hooks/notify_discord.py`, `tests/test_discord_bot.py`, `tests/test_notify_discord.py`
+
+**Why:** When Claude Code asked multiple questions via `AskUserQuestion`, the answers submitted in Discord were not received by Claude Code when routed through `PermissionRequest`. The `updatedInput` was nested inside `decision` in the `hookSpecificOutput`, but Claude Code's AskUserQuestion processing expects it at the **top level** of `hookSpecificOutput`. Single questions happened to work (likely because Claude Code handles them inline), but multi-question consistently failed.
+
+**What:**
+- `hook_output()` now places `updatedInput` at BOTH the top level of `hookSpecificOutput` (for AskUserQuestion processing) and inside `decision` (for backward compatibility with other PermissionRequest handlers).
+- Added multi-question tests: submit with 2 questions (single-select + multi-select), select accumulation across 2 questions, and colon-in-`request_id` patterns.
+
 ## [0.10.1] 2026-05-08 — Reliable message forwarding, submission confirmation, and single-instance guard
 
 **Changed:** `hooks/discord_bot.py`, `hooks/notify_discord.py`, `ARCHITECTURE.md`, `README.md`, `tests/test_discord_bot.py`, `tests/test_notify_discord.py`

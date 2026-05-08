@@ -41,6 +41,7 @@ def test_hook_output_with_updated_input_permission(capsys):
     hs = out["hookSpecificOutput"]
     assert hs["hookEventName"] == "PermissionRequest"
     assert hs["decision"]["updatedInput"] == ui
+    assert hs["updatedInput"] == ui  # top-level for AskUserQuestion compatibility
 
 
 def test_hook_output_with_updated_input_pretooluse(capsys):

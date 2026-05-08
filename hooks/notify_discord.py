@@ -130,16 +130,13 @@ def hook_output(
             d["updatedPermissions"] = updated_permissions
         if updated_input is not None:
             d["updatedInput"] = updated_input
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PermissionRequest",
-                        "decision": d,
-                    }
-                }
-            )
-        )
+        hook_specific_output: dict = {
+            "hookEventName": "PermissionRequest",
+            "decision": d,
+        }
+        if updated_input is not None:
+            hook_specific_output["updatedInput"] = updated_input
+        print(json.dumps({"hookSpecificOutput": hook_specific_output}))
     else:
         # PreToolUse format
         hs: dict = {

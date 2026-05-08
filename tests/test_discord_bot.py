@@ -176,6 +176,60 @@ async def test_on_interaction_askq_select(decision_dir):
     discord_bot._pending_questions.pop("sel-req", None)
 
 
+async def test_on_interaction_askq_submit_multi(decision_dir):
+    """Submit answers for 2 questions — single-select + multi-select."""
+    questions = [
+        {"question": "Which framework?", "header": "Framework",
+         "options": [{"label": "React"}, {"label": "Vue"}], "multiSelect": False},
+        {"question": "What features matter?", "header": "Features",
+         "options": [{"label": "Performance"}, {"label": "DX"}], "multiSelect": True},
+    ]
+    answers = {"Which framework?": "React", "What features matter?": "Performance, DX"}
+    discord_bot._pending_questions["multi:q-req"] = {
+        "questions": questions, "answers": answers,
+    }
+    interaction = _make_interaction("askq_submit:multi:q-req")
+    await discord_bot.on_interaction(interaction)
+    data = json.loads((decision_dir / "multi:q-req.json").read_text())
+    assert data["decision"] == "allow"
+    assert data["updatedInput"]["answers"] == answers
+    assert data["updatedInput"]["questions"] == questions
+    assert "multi:q-req" not in discord_bot._pending_questions
+
+
+async def test_on_interaction_askq_select_multi(decision_dir):
+    """Select values accumulate independently across 2 questions."""
+    questions = [
+        {"question": "Which color?", "header": "Color",
+         "options": [{"label": "Red"}, {"label": "Blue"}], "multiSelect": False},
+        {"question": "Which size?", "header": "Size",
+         "options": [{"label": "S"}, {"label": "M"}, {"label": "L"}], "multiSelect": False},
+    ]
+    discord_bot._pending_questions["sel:multi-req"] = {
+        "questions": questions, "answers": {},
+    }
+
+    # Select question 0 → Red
+    inter0 = MagicMock(spec=discord.Interaction)
+    inter0.type = discord.InteractionType.component
+    inter0.data = {"custom_id": "askq:0:sel:multi-req", "values": ["Red"]}
+    inter0.response.send_message = AsyncMock()
+    await discord_bot.on_interaction(inter0)
+    assert discord_bot._pending_questions["sel:multi-req"]["answers"] == {"Which color?": "Red"}
+
+    # Select question 1 → L
+    inter1 = MagicMock(spec=discord.Interaction)
+    inter1.type = discord.InteractionType.component
+    inter1.data = {"custom_id": "askq:1:sel:multi-req", "values": ["L"]}
+    inter1.response.send_message = AsyncMock()
+    await discord_bot.on_interaction(inter1)
+    assert discord_bot._pending_questions["sel:multi-req"]["answers"] == {
+        "Which color?": "Red", "Which size?": "L",
+    }
+
+    discord_bot._pending_questions.pop("sel:multi-req", None)
+
+
 # ── helper tests ──────────────────────────────────────────────────────────────
 
 
